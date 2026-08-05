@@ -1,4 +1,17 @@
-"""Live / demo execution against a MetaTrader 5 terminal.
+"""Live / demo ORDER PLACEMENT against a MetaTrader 5 terminal.
+
+.. warning::
+   **Not parity-checked. Do not use for automated trading yet.**
+
+   ``tests/test_parity.py`` verifies the *signal scanner* against the
+   backtester. This module predates that work and never received the fixes it
+   produced: it still settles zones on the zone timeframe rather than the entry
+   timeframe, ages zones through the current bar, and does not retire zones it
+   has traded. It will therefore place trades that differ from both the
+   scanner and the backtest.
+
+   The deployed signal bot (``sd_bot/scanner.py``) does not use any of this.
+   Fix and parity-test this module before letting it touch an account.
 
 Cadence mirrors how the strategy is actually traded by hand:
 

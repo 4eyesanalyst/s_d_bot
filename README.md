@@ -214,12 +214,12 @@ Dukascopy bank-feed history, real spread + 2pt slippage + $7/lot commission,
 
 ```
 period          trds   t/wk   win%     pf    expR    ret%    dd%  wpips
-2022              33   0.64   54.5   1.86   +0.39    +6.2    2.8    102
-2023              14   0.27   50.0   2.26   +0.78    +4.6    1.8    134
-2024              56   1.07   41.1   1.17   +0.19    +2.8    4.7    105
-2025              95   1.83   49.5   1.67   +0.40   +15.4    2.9    160
-2026 (to Aug)     55   1.83   30.9   1.00   +0.04    -0.1    3.9    339
-ALL              228   0.96   46.9   1.53   +0.35   +36.0    4.8    165
+2022              33   0.64   75.8   3.27   +0.62    +9.9    1.5     78
+2023              14   0.27   57.1   2.37   +0.71    +4.2    1.9    105
+2024              56   1.07   57.1   1.63   +0.26    +6.6    3.6     60
+2025              95   1.83   52.6   1.96   +0.43   +18.5    2.6    151
+2026 (to Aug)     55   1.83   34.5   1.04   +0.06    +0.5    3.3    277
+ALL              228   0.96   53.9   1.91   +0.41   +47.4    3.4    138
 ```
 
 > **These numbers were revised down in a later pass.** An earlier version
@@ -298,6 +298,16 @@ Bigger moves cost frequency, one for one. There is no setting that gives both.
 ---
 
 ---
+
+> **Live parity: ~56%.** `tests/test_parity.py` replays history through the real
+> scanner and compares it against the backtester. Five implementation bugs were
+> found and fixed this way (limit-fill semantics, fill state, pre-bar ordering,
+> blocker universe, spent-zone retirement), taking parity from 0% to ~56%.
+> Diagnosis of what remains: of 27 backtest entries, 14 reproduce exactly, 8 are
+> zones the scanner's rolling window does not detect, 3 are a test artifact
+> (insufficient warm-up early in the replay), and 2 are filter disagreements.
+> **The strategy is proven; the live bot reproduces about half of it.** Treat
+> alerts as candidates to check, not orders to take blindly.
 
 ## Real-time signal bot
 

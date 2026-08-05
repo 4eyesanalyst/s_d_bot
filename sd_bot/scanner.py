@@ -80,11 +80,21 @@ class SignalScanner:
         # Every entry ever signalled this session, for parity testing against
         # the backtester.
         self.all_signalled: list[ActiveSignal] = []
+        # Zone keys already traded. The backtester sets zone.traded once and
+        # that zone is gone for good -- neither re-entered nor counted as an
+        # obstacle. The scanner rebuilds its zone map from scratch whenever a
+        # zone-timeframe bar closes, which would resurrect spent zones, so the
+        # fact has to be remembered here and reapplied.
+        self.signalled_keys: set[str] = set()
         self._last_bar: dict[str, int] = {}
         # Per-symbol zone map, rebuilt only when a zone-timeframe bar closes.
         self._analysis: dict[str, dict] = {}
         self._last_heartbeat = 0.0
         self._load()
+
+    @staticmethod
+    def _zone_key(symbol: str, zone) -> str:
+        return f"{symbol}:{zone.timeframe}:{zone.created_time}:{zone.kind}"
 
     # -- persistence ----------------------------------------------------------
 
@@ -95,13 +105,16 @@ class SignalScanner:
             raw = json.loads(self.state_path.read_text(encoding="utf-8"))
             self.active = {k: ActiveSignal(**v) for k, v in raw.get("active", {}).items()}
             self.cooldown = raw.get("cooldown", {})
+            self.signalled_keys = set(raw.get("signalled", []))
         except Exception:
-            self.active, self.cooldown = {}, {}
+            self.active, self.cooldown, self.signalled_keys = {}, {}, set()
 
     def _save(self) -> None:
         payload = {
             "active": {k: asdict(v) for k, v in self.active.items()},
             "cooldown": self.cooldown,
+            # Bounded: only the most recent keys matter, older zones age out.
+            "signalled": sorted(self.signalled_keys)[-400:],
         }
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -255,6 +268,10 @@ class SignalScanner:
             bias_pool = settle_on(
                 find_zones(bias_bars, cfg.zone, bias_struct), prior, bias_secs
             )
+            # Zones are fresh objects; restore what we already spent.
+            for z in pool:
+                if self._zone_key(symbol, z) in self.signalled_keys:
+                    z.traded = True
             cached = {
                 "zone_stamp": zone_stamp, "bias_stamp": bias_stamp,
                 "zone_struct": zone_struct, "bias_struct": bias_struct,
@@ -323,7 +340,7 @@ class SignalScanner:
             if plan is None:
                 continue
 
-            key = f"{symbol}:{zone.timeframe}:{zone.created_time}:{zone.kind}"
+            key = self._zone_key(symbol, zone)
             if key in self.active:
                 continue
             if self.cooldown.get(key, 0) > time.time():
@@ -349,6 +366,9 @@ class SignalScanner:
                 )
                 self.active[key] = sig
                 self.all_signalled.append(sig)
+                # Spent for good, matching zone.traded in the backtester.
+                self.signalled_keys.add(key)
+                zone.traded = True
                 self.cooldown[key] = time.time() + cfg.alerts.cooldown_minutes * 60
                 self.emit(
                     "TRIGGERED", symbol,
