@@ -1,0 +1,41 @@
+# systemd unit for running the signal bot without Docker.
+#
+#   sudo cp deploy/sd-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sd-bot
+#   journalctl -u sd-bot -f
+#
+# Adjust User and the two paths to match your server.
+
+[Unit]
+Description=Supply & Demand signal bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+WorkingDirectory=/home/trader/sd-bot
+Environment=TZ=UTC
+Environment=PYTHONUNBUFFERED=1
+# Secrets live here, readable only by the service user (chmod 600).
+EnvironmentFile=/home/trader/sd-bot/.env
+ExecStart=/home/trader/sd-bot/.venv/bin/python run_signals.py
+
+# run_signals.py already retries internally; this catches anything that kills
+# the process outright.
+Restart=always
+RestartSec=30
+
+# Basic hardening: the bot only ever needs to read its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/trader/sd-bot/data /home/trader/sd-bot/signals
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

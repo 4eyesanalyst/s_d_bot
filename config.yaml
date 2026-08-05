@@ -1,0 +1,135 @@
+# Supply & Demand bot configuration.
+# Every value here is a filter. Loosening one buys more trades, not more profit.
+
+execution:
+  # Use the EXACT names from your broker's Market Watch. Many brokers add
+  # suffixes: EURUSD.m, EURUSDpro, XAUUSD.raw ... `python -m sd_bot account`
+  # will tell you whether a name resolves.
+  # Only instruments that survived a 2022-2026 backtest. The other five FX
+  # majors were tested and rejected: GBPUSD PF 0.70, USDCHF 0.84, USDCAD 0.78,
+  # AUDUSD 0.44, NZDUSD 0.21 -- all losing, all with 12-15% drawdowns.
+  symbols:
+    - XAUUSD
+    - EURUSD
+    - USDJPY
+
+  # The three-screen workflow: bias sets direction, zones are the map,
+  # entry is the trigger.
+  # H1 zones, not H4. Gold's H4 chart only forms ~0.28 zones/day, which caps
+  # trading at roughly one setup every four days. H1 more than doubles that and
+  # gold is volatile enough that H1 zones still produce ~100 pip targets.
+  bias_timeframe: H4
+  zone_timeframe: H1
+  entry_timeframe: M15
+
+  max_spread_points: 60            # gold's spread is wider than FX
+  # London + New York only. 07:00-21:59 UTC covers both sessions year-round
+  # through the DST shifts:
+  #   summer  London 07:00-15:30, New York 12:00-21:00 UTC
+  #   winter  London 08:00-16:30, New York 13:00-22:00 UTC
+  # Measured against 24h trading this gives up roughly a third of the setups
+  # and buys a materially better drawdown (out-of-sample 6.6% -> 3.9%).
+  session_hours_utc: [7, 8, 9, 10, 11, 12, 13, 14, 15,
+                      16, 17, 18, 19, 20, 21]
+  trade_days: [0, 1, 2, 3, 4]      # Mon-Fri
+  friday_close_hour_utc: 20        # flatten before the weekend gap
+
+  magic_number: 771001
+  deviation_points: 20
+  comment: sd_bot
+  poll_seconds: 20
+
+risk:
+  risk_per_trade_pct: 0.5          # survive a 10-loss streak without drama
+  max_open_trades: 3
+  max_trades_per_symbol: 1
+  max_total_risk_pct: 2.0
+  daily_loss_limit_pct: 3.0        # stop for the day
+  weekly_loss_limit_pct: 6.0       # stop for the week
+  max_drawdown_pct: 15.0           # stop adding risk entirely
+  losing_streak_trigger: 3
+  losing_streak_risk_factor: 0.5   # halve size until a winner lands
+  max_currency_exposure: 2.0       # long EUR three ways is one trade, not three
+  enforce_currency_exposure: true
+
+zone:
+  # --- what counts as a base ---
+  min_base_candles: 1
+  max_base_candles: 6
+  base_body_atr: 0.50
+  base_body_ratio: 0.60
+
+  # --- what counts as a departure ---
+  leg_body_atr: 1.00
+  leg_body_ratio: 0.50
+  leg_lookahead: 12
+  min_departure_ratio: 3.0         # price must leave 3x the zone's own height
+
+  # --- rejection filters ---
+  max_zone_atr: 2.0
+  min_zone_atr: 0.08
+  max_tests: 1                     # fresh zones only
+  max_zone_age_bars: 500
+
+  # --- scoring weights (sum to 100) ---
+  w_freshness: 22
+  w_departure: 18
+  w_base_tightness: 8
+  w_bos: 14
+  w_htf_trend: 14
+  w_curve: 10
+  w_htf_confluence: 9
+  w_imbalance: 5
+  min_score: 55                    # see README: graded C+ on H1 gold
+
+structure:
+  swing_lookback: 2
+  require_close_break: true
+  equilibrium_tolerance: 0.10
+
+signal:
+  entry_mode: limit                # limit | confirmation
+  entry_depth: 0.0                 # 0.0 = proximal edge, 0.5 = zone midpoint
+  stop_buffer_zone: 0.15
+  stop_buffer_atr: 0.20
+  min_risk_reward: 3.0             # profit margin to the next opposing zone
+  # Move size ~= stop x reward ratio. A 40 pip floor is what puts the average
+  # winner at ~100 pips on gold; it is the single lever that controls this.
+  min_stop_pips: 40
+  max_stop_pips: 0
+  # 1.25R, not 2.0R. Banking the first half earlier gave a better result in the
+  # tuning period, the held-out period, the gold-only proof and the portfolio
+  # proof -- four independent looks, all pointing the same way, and monotonic
+  # from 2.0 -> 1.75 -> 1.5 -> 1.25. Less give-back on trades that stall.
+  tp1_r: 1.25
+  tp1_fraction: 0.5
+  tp2_mode: opposing_zone          # opposing_zone | fixed_r
+  tp2_r: 5.0
+  # Measured on gold: moving to breakeven cost expectancy in both the tuning
+  # and the held-out period. Set true to trade smaller swings more safely.
+  breakeven_after_tp1: false
+  breakeven_offset_r: 0.1
+  trail_after_tp1: true
+  trail_swing_lookback: 2
+  pending_expiry_bars: 96          # a day of M15 bars
+
+backtest:
+  initial_balance: 10000
+  slippage_points: 2.0
+  commission_per_lot: 7.0
+  pessimistic_fills: true
+  start: "2022-01-01"
+  end: ""                          # empty = up to now
+
+# Per-symbol overrides. Anything volatility-dependent belongs here: a 40 pip
+# stop floor is right for gold (H1 ATR ~91 pips) and would reject essentially
+# every EURUSD setup (H1 ATR ~14 pips). Floors below are the same 0.45 x ATR
+# ratio that gold uses.
+symbols:
+  EURUSD: {signal: {min_stop_pips: 6}}
+  GBPUSD: {signal: {min_stop_pips: 8}}
+  USDJPY: {signal: {min_stop_pips: 11}}
+  USDCHF: {signal: {min_stop_pips: 6}}
+  AUDUSD: {signal: {min_stop_pips: 6}}
+  USDCAD: {signal: {min_stop_pips: 7}}
+  NZDUSD: {signal: {min_stop_pips: 6}}

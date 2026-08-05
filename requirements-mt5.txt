@@ -1,0 +1,5 @@
+# Windows only. Needed exclusively for `sd_bot live`, `sd_bot scan` and
+# `sd_bot account`, which drive a running MetaTrader 5 terminal.
+# The signal bot does not need this.
+-r requirements.txt
+MetaTrader5>=5.0.45

@@ -1,0 +1,499 @@
+"""Real-time signal service.
+
+Watches a list of instruments, applies exactly the rules the backtester applies,
+and pushes an alert the moment a setup becomes actionable. It then keeps
+following that signal and tells you when it fills, banks its first target, or
+stops out -- so the exit is delivered as reliably as the entry.
+
+Three alert kinds:
+
+    APPROACHING  price is nearing a qualifying zone. Get ready, nothing to do.
+    TRIGGERED    price has reached the entry. Entry, stop and both targets given.
+    UPDATE       a live signal filled, hit TP1/TP2, or stopped out.
+
+State is persisted, so a restart does not re-alert setups you have already seen.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import numpy as np
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import sources
+from . import timeframes as tfmod
+from .config import Config
+from .feed import Feed
+from .indicators import atr as atr_fn
+from .notify import Broadcaster
+from .scoring import apply_score, grade
+from .sessions import in_session, is_week_close
+from .signals import build_plan
+from .structure import Structure, trend_name
+from .trades import LONG, pip_size
+from .zones import DEMAND, find_zones, settle, settle_on, update_all
+
+# Generous windows on purpose. Swing structure, trend and the dealing range are
+# all history-dependent, so a short window makes the live bot score zones
+# differently from the backtest and silently changes the strategy.
+BARS_ENTRY = 1500
+BARS_ZONE = 4000
+BARS_BIAS = 1500
+
+
+@dataclass
+class ActiveSignal:
+    """A signal we have alerted on and are still following."""
+
+    key: str
+    symbol: str
+    direction: int
+    entry: float
+    stop: float
+    tp1: float
+    tp2: float
+    score: float
+    zone_note: str
+    created: str
+    status: str = "pending"      # pending -> filled -> tp1 -> closed
+    alerted_approach: bool = False
+
+    @property
+    def is_long(self) -> bool:
+        return self.direction == LONG
+
+
+class SignalScanner:
+    def __init__(self, cfg: Config, broadcaster: Broadcaster,
+                 feed: Feed, state_dir: str = "signals"):
+        self.cfg = cfg
+        self.out = broadcaster
+        self.feed = feed
+        self.state_path = Path(state_dir) / "state.json"
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.active: dict[str, ActiveSignal] = {}
+        self.cooldown: dict[str, float] = {}
+        # Every entry ever signalled this session, for parity testing against
+        # the backtester.
+        self.all_signalled: list[ActiveSignal] = []
+        self._last_bar: dict[str, int] = {}
+        # Per-symbol zone map, rebuilt only when a zone-timeframe bar closes.
+        self._analysis: dict[str, dict] = {}
+        self._last_heartbeat = 0.0
+        self._load()
+
+    # -- persistence ----------------------------------------------------------
+
+    def _load(self) -> None:
+        if not self.state_path.exists():
+            return
+        try:
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+            self.active = {k: ActiveSignal(**v) for k, v in raw.get("active", {}).items()}
+            self.cooldown = raw.get("cooldown", {})
+        except Exception:
+            self.active, self.cooldown = {}, {}
+
+    def _save(self) -> None:
+        payload = {
+            "active": {k: asdict(v) for k, v in self.active.items()},
+            "cooldown": self.cooldown,
+        }
+        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    # -- main loop ------------------------------------------------------------
+
+    def run(self) -> None:
+        self.startup_report()
+        try:
+            while True:
+                try:
+                    self.poll()
+                except Exception as exc:
+                    print(f"[{_now()}] scan error: {exc!r}", flush=True)
+                time.sleep(self.cfg.alerts.poll_seconds)
+        except KeyboardInterrupt:
+            print("\nstopped.")
+            self._save()
+
+    def poll(self) -> None:
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        # Follow live signals every poll: exits are time-critical.
+        self.track(now)
+
+        for symbol in self.cfg.execution.symbols:
+            try:
+                self.scan(symbol, now)
+            except Exception as exc:
+                print(f"[{_now()}] {symbol}: {exc!r}", flush=True)
+
+        self.heartbeat()
+        self._save()
+
+    # -- following open signals -----------------------------------------------
+
+    def track(self, now: int) -> None:
+        for key, sig in list(self.active.items()):
+            tick = self.feed.tick(sig.symbol)
+            if tick is None:
+                continue
+            bid, ask = tick
+            price = bid if sig.is_long else ask
+            digits = sources.spec_for(sig.symbol).digits
+
+            if sig.status == "pending":
+                reached = price <= sig.entry if sig.is_long else price >= sig.entry
+                # A zone that fails before we ever fill is dead, not a trade.
+                blown = price < sig.stop if sig.is_long else price > sig.stop
+                if blown:
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} setup INVALIDATED before entry",
+                              f"price {price:.{digits}f} broke the zone at "
+                              f"{sig.stop:.{digits}f} without filling.\n"
+                              f"No trade. Removing from the watchlist.",
+                              {"side": "", "kind": "invalidated"})
+                    del self.active[key]
+                elif reached:
+                    sig.status = "filled"
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} ENTRY FILLED @ {sig.entry:.{digits}f}",
+                              self._levels(sig, digits),
+                              {"side": "BUY" if sig.is_long else "SELL",
+                               "kind": "filled"})
+
+            elif sig.status == "filled":
+                if (price >= sig.tp1) if sig.is_long else (price <= sig.tp1):
+                    sig.status = "tp1"
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} TP1 HIT @ {sig.tp1:.{digits}f}",
+                              f"+{self._pips(sig, sig.tp1):.0f} pips. Bank half.\n"
+                              f"Consider moving the stop to entry "
+                              f"({sig.entry:.{digits}f}).\n"
+                              f"TP2 remains {sig.tp2:.{digits}f} "
+                              f"(+{self._pips(sig, sig.tp2):.0f} pips).",
+                              {"side": "", "kind": "tp1"})
+                elif (price <= sig.stop) if sig.is_long else (price >= sig.stop):
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} STOPPED OUT @ {sig.stop:.{digits}f}",
+                              f"{self._pips(sig, sig.stop):.0f} pips. "
+                              f"Full 1R loss, as planned.",
+                              {"side": "", "kind": "stop"})
+                    del self.active[key]
+
+            elif sig.status == "tp1":
+                if (price >= sig.tp2) if sig.is_long else (price <= sig.tp2):
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} TP2 HIT @ {sig.tp2:.{digits}f}",
+                              f"+{self._pips(sig, sig.tp2):.0f} pips. Trade complete.",
+                              {"side": "", "kind": "tp2"})
+                    del self.active[key]
+                elif (price <= sig.entry) if sig.is_long else (price >= sig.entry):
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} back to BREAKEVEN",
+                              f"Price returned to entry {sig.entry:.{digits}f} "
+                              f"after TP1. If your stop is at entry you are flat, "
+                              f"with TP1 banked.",
+                              {"side": "", "kind": "breakeven"})
+                    del self.active[key]
+
+    def _pips(self, sig: ActiveSignal, price: float) -> float:
+        return (price - sig.entry) * sig.direction / pip_size(sig.symbol)
+
+    # -- scanning for new setups ----------------------------------------------
+
+    def scan(self, symbol: str, now: int) -> None:
+        cfg = self.cfg.for_symbol(symbol)
+        ex = cfg.execution
+
+        entry = self.feed.bars(symbol, ex.entry_timeframe, BARS_ENTRY)
+        if entry is None or len(entry) < 60:
+            return
+        # One scan per closed entry bar.
+        latest = int(entry.time[-1])
+        if self._last_bar.get(symbol) == latest:
+            return
+        self._last_bar[symbol] = latest
+
+        zone_bars = self.feed.bars(symbol, ex.zone_timeframe, BARS_ZONE)
+        bias_bars = self.feed.bars(symbol, ex.bias_timeframe, BARS_BIAS)
+        if zone_bars is None or bias_bars is None:
+            return
+        if len(zone_bars) < 120 or len(bias_bars) < 60:
+            return
+
+        zone_secs = tfmod.seconds(ex.zone_timeframe)
+        bias_secs = tfmod.seconds(ex.bias_timeframe)
+
+        # Zones are derived from zone-timeframe bars, so they only change when a
+        # new one closes. Detect then, and age the result forward with each new
+        # entry bar -- the same incremental model the backtester uses, and far
+        # cheaper than rebuilding the map every 15 minutes.
+        cached = self._analysis.get(symbol)
+        zone_stamp = int(zone_bars.time[-1])
+        bias_stamp = int(bias_bars.time[-1])
+
+        # Zones are aged with every bar *except the newest one*. The bar that
+        # first reaches a zone is the entry, not a used-up test -- the
+        # backtester evaluates entries against pre-bar state for exactly this
+        # reason, and ageing through the current bar would retire every setup
+        # one moment before it could be signalled.
+        prior = entry.slice(0, len(entry) - 1)
+        prior_stamp = int(prior.time[-1]) if len(prior) else 0
+
+        if (cached is None or cached["zone_stamp"] != zone_stamp
+                or cached["bias_stamp"] != bias_stamp):
+            zone_struct = Structure(zone_bars, cfg.structure.swing_lookback)
+            bias_struct = Structure(bias_bars, cfg.structure.swing_lookback)
+            pool = settle_on(
+                find_zones(zone_bars, cfg.zone, zone_struct), prior, zone_secs
+            )
+            bias_pool = settle_on(
+                find_zones(bias_bars, cfg.zone, bias_struct), prior, bias_secs
+            )
+            cached = {
+                "zone_stamp": zone_stamp, "bias_stamp": bias_stamp,
+                "zone_struct": zone_struct, "bias_struct": bias_struct,
+                "pool": pool, "bias_pool": bias_pool,
+                "aged_to": prior_stamp,
+            }
+            self._analysis[symbol] = cached
+        else:
+            # Same zone map, newer entry bars: age it forward only.
+            zone_struct = cached["zone_struct"]
+            bias_struct = cached["bias_struct"]
+            pool, bias_pool = cached["pool"], cached["bias_pool"]
+            fresh = (prior.time > cached["aged_to"]) if len(prior) else None
+            if fresh is not None and fresh.any():
+                for k in np.flatnonzero(fresh):
+                    update_all(pool, float(prior.high[k]), float(prior.low[k]),
+                               float(prior.close[k]))
+                    update_all(bias_pool, float(prior.high[k]), float(prior.low[k]),
+                               float(prior.close[k]))
+                cached["aged_to"] = prior_stamp
+
+        last = len(zone_bars) - 1
+        live = [z for z in pool if z.is_live(cfg.zone, last)]
+        # The profit-margin rule needs every zone that could still block price,
+        # not just the tradeable ones. A zone that has already been tested is
+        # spent as an entry but still stands in the way as resistance, and the
+        # backtester counts it -- so this list must match, or the two engines
+        # disagree about which setups have room to run.
+        obstacles = [z for z in pool if not z.invalidated and not z.traded]
+        bias_live = [z for z in bias_pool if not z.invalidated]
+        htf_trend = int(bias_struct.trend[-1])
+        for z in live:
+            apply_score(z, cfg, bias_live, htf_trend)
+
+        price = float(entry.close[-1])
+        # The backtest fills a resting limit order at the proximal line, so a
+        # setup counts as triggered when the bar's range *reached* the entry --
+        # not only when it closed beyond it. Using the close would silently drop
+        # every wick-fill and make live results diverge from the backtest.
+        bar_high = float(entry.high[-1])
+        bar_low = float(entry.low[-1])
+
+        atr_value = float(atr_fn(entry.high, entry.low, entry.close)[-1])
+        spread_points = self.feed.spread_points(symbol)
+        spread_price = spread_points * sources.spec_for(symbol).point
+        digits = sources.spec_for(symbol).digits
+        pip = pip_size(symbol)
+
+        # Same spread gate the backtester applies.
+        if spread_points > ex.max_spread_points:
+            return
+
+        # The backtest allows max_trades_per_symbol concurrent positions; mirror
+        # that here so the signal count cannot drift above what was tested.
+        live_here = sum(1 for s in self.active.values() if s.symbol == symbol)
+        if live_here >= cfg.risk.max_trades_per_symbol:
+            return
+
+        tradeable = in_session(now, ex) and not is_week_close(now, ex)
+
+        for zone in sorted(live, key=lambda z: -z.score):
+            plan, why = build_plan(
+                zone, cfg, len(entry) - 1, atr_value,
+                obstacles + bias_live, spread_price
+            )
+            if plan is None:
+                continue
+
+            key = f"{symbol}:{zone.timeframe}:{zone.created_time}:{zone.kind}"
+            if key in self.active:
+                continue
+            if self.cooldown.get(key, 0) > time.time():
+                continue
+
+            distance = abs(price - plan.entry)
+            # Limit-order semantics, matching the backtester exactly.
+            triggered = (
+                bar_low <= plan.entry if plan.is_long else bar_high >= plan.entry
+            )
+
+            if triggered and tradeable:
+                sig = ActiveSignal(
+                    key=key, symbol=symbol, direction=plan.direction,
+                    entry=plan.entry, stop=plan.stop, tp1=plan.tp1, tp2=plan.tp2,
+                    score=zone.score, zone_note=plan.zone_note,
+                    created=datetime.now(timezone.utc).isoformat(),
+                    # The bar's range reached the entry, so a resting limit
+                    # order is filled -- exactly as the backtester models it.
+                    # Leaving this "pending" would keep the signal open forever
+                    # whenever price never closed back through the level.
+                    status="filled",
+                )
+                self.active[key] = sig
+                self.all_signalled.append(sig)
+                self.cooldown[key] = time.time() + cfg.alerts.cooldown_minutes * 60
+                self.emit(
+                    "TRIGGERED", symbol,
+                    f"{'BUY' if plan.is_long else 'SELL'} {symbol} @ "
+                    f"{plan.entry:.{digits}f}",
+                    self._full_alert(cfg, symbol, zone, plan, htf_trend,
+                                     zone_struct, last, digits, pip),
+                    {"side": "BUY" if plan.is_long else "SELL", "kind": "triggered",
+                     "score": round(zone.score), "symbol": symbol},
+                )
+                return  # one new signal per symbol per bar
+
+            if (cfg.alerts.alert_on_approach
+                    and distance <= cfg.alerts.approach_atr * atr_value):
+                approach_key = key + ":approach"
+                if self.cooldown.get(approach_key, 0) > time.time():
+                    continue
+                self.cooldown[approach_key] = (
+                    time.time() + cfg.alerts.cooldown_minutes * 60
+                )
+                self.emit(
+                    "APPROACHING", symbol,
+                    f"{symbol} approaching {'demand' if zone.kind == DEMAND else 'supply'}"
+                    f" ({grade(zone.score)})",
+                    f"price   {price:.{digits}f}\n"
+                    f"entry   {plan.entry:.{digits}f}  "
+                    f"({distance / pip:.0f} pips away)\n"
+                    f"stop    {plan.stop:.{digits}f}\n"
+                    f"target  {plan.tp2:.{digits}f}  ({plan.rr2:.1f}R)\n"
+                    f"zone    {zone.pattern} {grade(zone.score)} "
+                    f"score {zone.score:.0f}\n\n"
+                    f"Nothing to do yet. Alert will follow if price reaches entry"
+                    + ("" if tradeable else "\nNOTE: currently outside session hours."),
+                    {"side": "", "kind": "approach", "symbol": symbol},
+                )
+                return
+
+    # -- message building -----------------------------------------------------
+
+    def _full_alert(self, cfg, symbol, zone, plan, htf_trend,
+                    zone_struct, last, digits, pip) -> str:
+        risk_pips = plan.risk_distance / pip
+        tp1_pips = abs(plan.tp1 - plan.entry) / pip
+        tp2_pips = abs(plan.tp2 - plan.entry) / pip
+        curve = zone_struct.curve_position(last, plan.entry)
+
+        lots, note = self._size(cfg, symbol, plan.risk_distance)
+        why = [
+            f"{zone.pattern} zone, grade {grade(zone.score)} ({zone.score:.0f}/100)",
+            f"departure {zone.departure_ratio:.1f}x zone height",
+            f"{cfg.execution.bias_timeframe} trend {trend_name(htf_trend)}",
+            f"{'discount' if curve < 0.5 else 'premium'} ({curve:.0%} of range)",
+        ]
+        if zone.caused_bos:
+            why.append("departure broke structure")
+        if zone.has_imbalance:
+            why.append("unfilled FVG in the leg out")
+        if zone.tests == 0:
+            why.append("zone untested")
+
+        return (
+            f"ENTRY   {plan.entry:.{digits}f}\n"
+            f"STOP    {plan.stop:.{digits}f}   ({risk_pips:.0f} pips risk)\n"
+            f"TP1     {plan.tp1:.{digits}f}   (+{tp1_pips:.0f} pips, "
+            f"{cfg.signal.tp1_r:.1f}R) close {cfg.signal.tp1_fraction:.0%}\n"
+            f"TP2     {plan.tp2:.{digits}f}   (+{tp2_pips:.0f} pips, "
+            f"{plan.rr2:.1f}R)\n\n"
+            f"SIZE    {lots}\n"
+            f"        {note}\n\n"
+            f"WHY\n" + "\n".join(f"  - {w}" for w in why) + "\n\n"
+            f"Manage: bank {cfg.signal.tp1_fraction:.0%} at TP1"
+            + (", then stop to entry." if cfg.signal.breakeven_after_tp1
+               else ", let the rest run to TP2.")
+        )
+
+    def _size(self, cfg, symbol: str, risk_distance: float) -> tuple[str, str]:
+        equity = cfg.backtest.initial_balance
+        pct = cfg.risk.risk_per_trade_pct
+        spec = sources.spec_for(symbol)
+        loss_per_lot = spec.money_per_lot(risk_distance)
+        if loss_per_lot <= 0:
+            return "n/a", ""
+        amount = equity * pct / 100.0
+        lots = amount / loss_per_lot
+        step = spec.volume_step or 0.01
+        lots = max(step, int(lots / step) * step)
+        return (
+            f"{lots:.2f} lots",
+            f"risks {amount:,.0f} ({pct}% of {equity:,.0f}). "
+            f"Scale to your own balance.",
+        )
+
+    def _levels(self, sig: ActiveSignal, digits: int) -> str:
+        return (
+            f"ENTRY   {sig.entry:.{digits}f}\n"
+            f"STOP    {sig.stop:.{digits}f}\n"
+            f"TP1     {sig.tp1:.{digits}f}\n"
+            f"TP2     {sig.tp2:.{digits}f}\n\n"
+            f"You are in the trade. Manage to plan."
+        )
+
+    # -- housekeeping ---------------------------------------------------------
+
+    def emit(self, kind: str, symbol: str, subject: str, body: str,
+             meta: dict | None = None) -> None:
+        meta = {"kind": kind.lower(), "symbol": symbol, **(meta or {})}
+        results = self.out.send(f"[{kind}] {subject}", body, meta)
+        dead = [n for n, ok in results.items() if not ok]
+        if dead:
+            print(f"[{_now()}] delivery failed on: {', '.join(dead)}", flush=True)
+
+    def startup_report(self) -> None:
+        ex = self.cfg.execution
+        print(f"\n[{_now()}] signal scanner starting")
+        print(f"  feed        {self.feed.backend}")
+        print(f"  watching    {', '.join(ex.symbols)}")
+        print(f"  timeframes  bias={ex.bias_timeframe} zones={ex.zone_timeframe} "
+              f"entry={ex.entry_timeframe}")
+        print(f"  session     {min(ex.session_hours_utc):02d}:00-"
+              f"{max(ex.session_hours_utc):02d}:59 UTC")
+        print(f"  poll        every {self.cfg.alerts.poll_seconds}s")
+        print("  channels:")
+        for line in self.out.preflight():
+            print(line)
+        if self.active:
+            print(f"  resumed {len(self.active)} signal(s) already in flight")
+        print(flush=True)
+
+    def heartbeat(self) -> None:
+        hours = self.cfg.alerts.heartbeat_hours
+        if hours <= 0:
+            return
+        if time.time() - self._last_heartbeat < hours * 3600:
+            return
+        self._last_heartbeat = time.time()
+        lines = [f"watching {len(self.cfg.execution.symbols)} instruments"]
+        if self.active:
+            for sig in self.active.values():
+                lines.append(f"  {sig.symbol} {'BUY' if sig.is_long else 'SELL'} "
+                             f"{sig.status}")
+        else:
+            lines.append("no live signals")
+        self.emit("STATUS", "", "Signal bot alive", "\n".join(lines),
+                  {"kind": "heartbeat"})
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M:%S")

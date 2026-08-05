@@ -1,0 +1,11 @@
+# Core dependencies. The signal bot, the backtester and the whole engine run on
+# these alone -- on Linux, macOS or Windows, with no MetaTrader terminal.
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0
+dukascopy-python>=4.0     # market data; no broker account or terminal needed
+
+# For MetaTrader 5 order placement (`sd_bot live`), also install:
+#     pip install -r requirements-mt5.txt
+# That package is Windows-only, which is why it is not listed here: keeping it
+# out is what lets the signal bot run on a cheap Linux server.

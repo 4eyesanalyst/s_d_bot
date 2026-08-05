@@ -1,0 +1,16 @@
+# Secrets - never commit
+.env
+.env.*
+
+# Large / regenerable
+data/
+results/
+*.tar.gz
+*.log
+__pycache__/
+*.pyc
+.venv/
+
+# NOTE: signals/ is deliberately NOT ignored. The scheduled workflow commits
+# state.json back so the bot remembers live signals between runs, and those
+# commits keep the repo active so GitHub does not pause the schedule.

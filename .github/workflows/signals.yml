@@ -1,0 +1,75 @@
+name: Supply & Demand signals
+
+# Runs on GitHub's servers, so your machine can be off.
+#
+# Every 30 minutes through the London and New York sessions, Monday to Friday.
+# GitHub's scheduler is best-effort and can drift 5-15 minutes when it is busy;
+# that is tolerable here because signals are limit orders resting at a zone,
+# not market orders that need the exact second.
+on:
+  schedule:
+    - cron: "*/30 7-21 * * 1-5"
+  workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
+    inputs:
+      force:
+        description: "Scan even outside session hours"
+        type: boolean
+        default: false
+
+# Never let two scans run at once: they would both write state and one would
+# lose, which is how a signal gets alerted twice or silently dropped.
+concurrency:
+  group: signals
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # needed to commit signal state back
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Price history is large and slow to fetch. Caching it turns a 5-minute
+      # cold start into a few seconds. The rolling key is deliberate: cache
+      # entries are immutable, so each run writes a new one and restores from
+      # the most recent prefix match.
+      - name: Restore price cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: bars-${{ github.run_id }}
+          restore-keys: bars-
+
+      - name: Scan for signals
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python github_poll.py ${{ inputs.force && '--force' || '' }}
+
+      # Committing state back is what gives the bot memory between runs, and it
+      # keeps the repository active so GitHub does not pause the schedule after
+      # 60 days of quiet.
+      - name: Persist signal state
+        run: |
+          git config user.name  "sd-bot"
+          git config user.email "sd-bot@users.noreply.github.com"
+          git add -A signals/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no state change"
+          else
+            git commit -m "signal state $(date -u '+%Y-%m-%d %H:%M')Z"
+            git push
+          fi

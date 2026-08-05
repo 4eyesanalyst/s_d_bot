@@ -1,0 +1,22 @@
+services:
+  signals:
+    build: .
+    image: sd-bot-signals
+    container_name: sd-bot-signals
+    restart: unless-stopped
+    environment:
+      # Put the real values in a .env file next to this one:
+      #   TELEGRAM_TOKEN=123456:AAF...
+      #   TELEGRAM_CHAT_ID=987654321
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TZ=UTC
+    volumes:
+      - ./data:/app/data          # bar cache: makes restarts seed instantly
+      - ./signals:/app/signals    # signal log and in-flight state
+      - ./config.yaml:/app/config.yaml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

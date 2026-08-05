@@ -1,0 +1,6 @@
+{"time": "2026-08-05T11:58:53.499207+00:00", "subject": "[TEST] Signal bot delivery check", "body": "BUY XAUUSD @ 4183.42\nSTOP    4143.42   (40 pips risk)\nTP1     4263.42   (+80 pips, 2.0R)\nTP2     4343.42   (+160 pips, 4.0R)\n\nThis is a test. No trade was signalled.", "side": "BUY", "kind": "test"}
+{"time": "2026-08-05T12:02:31.291444+00:00", "subject": "[STATUS] Signal bot alive", "body": "watching 1 instruments\nno live signals", "kind": "heartbeat", "symbol": ""}
+{"time": "2026-08-05T13:09:10.302923+00:00", "subject": "[STATUS] Signal bot restarted", "body": "Recovered after a failure (restart #1).\nWatching XAUUSD again.", "kind": "restart", "symbol": ""}
+{"time": "2026-08-05T13:09:13.264384+00:00", "subject": "[STATUS] Signal bot restarted", "body": "Recovered after a failure (restart #2).\nWatching XAUUSD again.", "kind": "restart", "symbol": ""}
+{"time": "2026-08-05T15:19:30.168117+00:00", "subject": "[TEST] Signal bot delivery check", "body": "BUY XAUUSD @ 4183.42\nSTOP    4143.42   (40 pips risk)\nTP1     4263.42   (+80 pips, 2.0R)\nTP2     4343.42   (+160 pips, 4.0R)\n\nThis is a test. No trade was signalled.", "side": "BUY", "kind": "test"}
+{"time": "2026-08-05T16:02:54.519983+00:00", "subject": "[STATUS] Signal bot alive", "body": "watching 3 instruments\nno live signals", "kind": "heartbeat", "symbol": ""}
