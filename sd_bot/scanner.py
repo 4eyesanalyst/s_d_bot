@@ -40,6 +40,12 @@ from .zones import DEMAND, find_zones, settle, settle_on, update_all
 # Generous windows on purpose. Swing structure, trend and the dealing range are
 # all history-dependent, so a short window makes the live bot score zones
 # differently from the backtest and silently changes the strategy.
+# Bars examined per scan after a gap. GitHub can delay a 20-minute cron by two
+# hours or more, so a scan routinely has 6-9 bars to catch up on; this cap only
+# bites after a real outage, where replaying days of resolved setups would just
+# produce stale alerts.
+MAX_CATCHUP_BARS = 200
+
 BARS_ENTRY = 1500
 BARS_ZONE = 4000
 BARS_BIAS = 1500
@@ -226,9 +232,28 @@ class SignalScanner:
         entry = self.feed.bars(symbol, ex.entry_timeframe, BARS_ENTRY)
         if entry is None or len(entry) < 60:
             return
-        # One scan per closed entry bar.
+
+        # Examine EVERY entry bar that has closed since the last scan, not just
+        # the newest one.
+        #
+        # A scheduled runner does not get to choose when it wakes: GitHub
+        # delivers a 20-minute cron every 90-140 minutes under load, by which
+        # point six to nine M15 bars have closed. Looking only at the latest
+        # would leave the bot blind to the rest, and a zone touched by a wick
+        # two bars ago would never be seen. The backtester walks every bar, so
+        # this is also what parity requires.
         latest = int(entry.time[-1])
-        if self._last_bar.get(symbol) == latest:
+        last_seen = self._last_bar.get(symbol)
+        if last_seen is None:
+            start = len(entry) - 1          # first ever scan: just the newest
+        elif last_seen >= latest:
+            return                           # nothing new has closed
+        else:
+            start = int(np.searchsorted(entry.time, last_seen, "right"))
+        # After a long outage, do not replay days of history looking for setups
+        # that have long since resolved.
+        start = max(start, len(entry) - MAX_CATCHUP_BARS)
+        if start >= len(entry):
             return
         self._last_bar[symbol] = latest
 
@@ -250,12 +275,12 @@ class SignalScanner:
         zone_stamp = int(zone_bars.time[-1])
         bias_stamp = int(bias_bars.time[-1])
 
-        # Zones are aged with every bar *except the newest one*. The bar that
-        # first reaches a zone is the entry, not a used-up test -- the
-        # backtester evaluates entries against pre-bar state for exactly this
-        # reason, and ageing through the current bar would retire every setup
-        # one moment before it could be signalled.
-        prior = entry.slice(0, len(entry) - 1)
+        # Zones are aged with every bar *before* the ones we are about to
+        # examine. The bar that first reaches a zone is the entry, not a used-up
+        # test -- the backtester evaluates entries against pre-bar state for
+        # exactly this reason, and ageing through a bar before judging it would
+        # retire every setup one moment before it could be signalled.
+        prior = entry.slice(0, start)
         prior_stamp = int(prior.time[-1]) if len(prior) else 0
 
         if (cached is None or cached["zone_stamp"] != zone_stamp
@@ -294,27 +319,9 @@ class SignalScanner:
                 cached["aged_to"] = prior_stamp
 
         last = len(zone_bars) - 1
-        live = [z for z in pool if z.is_live(cfg.zone, last)]
-        # The profit-margin rule needs every zone that could still block price,
-        # not just the tradeable ones. A zone that has already been tested is
-        # spent as an entry but still stands in the way as resistance, and the
-        # backtester counts it -- so this list must match, or the two engines
-        # disagree about which setups have room to run.
-        obstacles = [z for z in pool if not z.invalidated and not z.traded]
         bias_live = [z for z in bias_pool if not z.invalidated]
         htf_trend = int(bias_struct.trend[-1])
-        for z in live:
-            apply_score(z, cfg, bias_live, htf_trend)
 
-        price = float(entry.close[-1])
-        # The backtest fills a resting limit order at the proximal line, so a
-        # setup counts as triggered when the bar's range *reached* the entry --
-        # not only when it closed beyond it. Using the close would silently drop
-        # every wick-fill and make live results diverge from the backtest.
-        bar_high = float(entry.high[-1])
-        bar_low = float(entry.low[-1])
-
-        atr_value = float(atr_fn(entry.high, entry.low, entry.close)[-1])
         spread_points = self.feed.spread_points(symbol)
         spread_price = spread_points * sources.spec_for(symbol).point
         digits = sources.spec_for(symbol).digits
@@ -324,17 +331,58 @@ class SignalScanner:
         if spread_points > ex.max_spread_points:
             return
 
+        atr_series = atr_fn(entry.high, entry.low, entry.close)
+        tradeable = in_session(now, ex) and not is_week_close(now, ex)
+
+        # Walk each unexamined bar: judge it against pre-bar zone state, then
+        # age the zones with it. Identical ordering to the backtester's loop.
+        for k in range(start, len(entry)):
+            self._evaluate_bar(
+                symbol, cfg, entry, k, pool, bias_pool, bias_live, zone_struct,
+                htf_trend, last, atr_series, spread_price, digits, pip, tradeable,
+            )
+            h, lo_, c = (float(entry.high[k]), float(entry.low[k]),
+                         float(entry.close[k]))
+            update_all(pool, h, lo_, c)
+            update_all(bias_pool, h, lo_, c)
+        cached["aged_to"] = latest
+
+    def _evaluate_bar(
+        self, symbol, cfg, entry, k, pool, bias_pool, bias_live, zone_struct,
+        htf_trend, last, atr_series, spread_price, digits, pip, tradeable,
+    ) -> None:
+        """Look for a signal on one entry bar, using zone state as it stood
+        before that bar printed."""
         # The backtest allows max_trades_per_symbol concurrent positions; mirror
         # that here so the signal count cannot drift above what was tested.
         live_here = sum(1 for s in self.active.values() if s.symbol == symbol)
         if live_here >= cfg.risk.max_trades_per_symbol:
             return
 
-        tradeable = in_session(now, ex) and not is_week_close(now, ex)
+        live = [z for z in pool if z.is_live(cfg.zone, last)]
+        if not live:
+            return
+        # The profit-margin rule needs every zone that could still block price,
+        # not just the tradeable ones. A zone that has already been tested is
+        # spent as an entry but still stands in the way as resistance, and the
+        # backtester counts it -- so this list must match, or the two engines
+        # disagree about which setups have room to run.
+        obstacles = [z for z in pool if not z.invalidated and not z.traded]
+        for z in live:
+            apply_score(z, cfg, bias_live, htf_trend)
+
+        price = float(entry.close[k])
+        # The backtest fills a resting limit order at the proximal line, so a
+        # setup counts as triggered when the bar's range *reached* the entry --
+        # not only when it closed beyond it. Using the close would silently drop
+        # every wick-fill and make live results diverge from the backtest.
+        bar_high = float(entry.high[k])
+        bar_low = float(entry.low[k])
+        atr_value = float(atr_series[k])
 
         for zone in sorted(live, key=lambda z: -z.score):
             plan, why = build_plan(
-                zone, cfg, len(entry) - 1, atr_value,
+                zone, cfg, k, atr_value,
                 obstacles + bias_live, spread_price
             )
             if plan is None:

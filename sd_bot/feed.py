@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -181,7 +182,18 @@ def _dukascopy_live(
     # Never ask for less than a few bars, or the request comes back empty.
     start = min(start, end - timedelta(seconds=step * 4))
 
-    bars = sources.fetch(symbol, timeframe, start, end)
+    # Dukascopy is a free public feed and stalls or fails intermittently. One
+    # bad response should cost a few seconds, not the whole scan.
+    bars = None
+    for attempt in range(3):
+        try:
+            bars = sources.fetch(symbol, timeframe, start, end)
+            if bars is not None and len(bars):
+                break
+        except Exception:
+            if attempt == 2:
+                raise
+        time.sleep(2 * (attempt + 1))
     if bars is None or len(bars) == 0:
         return None
 

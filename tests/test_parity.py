@@ -212,6 +212,62 @@ def run_parity(symbol: str, start: str, end: str, unlimited: bool = False) -> No
         state.unlink()
 
 
+def test_survives_sparse_scheduling() -> None:
+    """A scan must examine every bar it missed, not only the newest.
+
+    GitHub delivers a 20-minute cron every 90-140 minutes under load, by which
+    point six to nine M15 bars have closed. If a scan only inspects the latest,
+    the bot is blind to the rest and captures a fraction of its signals -- while
+    looking perfectly healthy. This measures capture at realistic run spacings.
+    """
+    print("
+test_survives_sparse_scheduling")
+
+    def run(stride: int) -> set:
+        cfg = Config.load("config.yaml")
+        cfg.execution.symbols = ["XAUUSD"]
+        cfg.alerts.channels = []
+        cfg.alerts.alert_on_approach = False
+        cfg.alerts.cooldown_minutes = 0
+        cfg.alerts.heartbeat_hours = 0
+        cfg.risk.max_trades_per_symbol = 99
+        cfg.risk.max_open_trades = 99
+        cfg.risk.max_total_risk_pct = 1e6
+        cfg.risk.max_drawdown_pct = 1e6
+        cfg.risk.daily_loss_limit_pct = 1e6
+        cfg.risk.weekly_loss_limit_pct = 1e6
+        cfg.risk.enforce_currency_exposure = False
+        cfg.validate()
+
+        series = load("XAUUSD", "2025-01-01", "2025-04-01")
+        feed = ReplayFeed({"XAUUSD": series})
+        state = Path(f"signals/_sparse{stride}.json")
+        state.unlink(missing_ok=True)
+        sc = SignalScanner(cfg, Broadcaster([SilentNotifier()]), feed,
+                           state_dir="signals")
+        sc.state_path = state
+        m15 = series["M15"]
+        for i in range(0, len(m15), stride):
+            ct = int(m15.time[i]) + 900
+            feed.advance_to(ct)
+            sc.track(ct)
+            sc.scan("XAUUSD", ct)
+        state.unlink(missing_ok=True)
+        return {(x.symbol, x.direction, round(x.entry, 5)) for x in sc.all_signalled}
+
+    dense = run(1)
+    check("dense scanning produces signals to compare against",
+          len(dense) >= 10, f"{len(dense)}")
+    if len(dense) < 10:
+        return
+
+    for stride, label in ((6, "90 min"), (9, "135 min")):
+        sparse = run(stride)
+        kept = len(dense & sparse) / len(dense)
+        check(f"scanning every {label} still captures most signals",
+              kept >= 0.75, f"{kept:.0%} of {len(dense)} kept")
+
+
 def main() -> int:
     print("=" * 66)
     print("  BACKTEST / LIVE PARITY")
@@ -224,6 +280,10 @@ def main() -> int:
             run_parity(symbol, "2025-01-01", "2025-04-01", unlimited=False)
         except FileNotFoundError as exc:
             print(f"  skipped {symbol}: {exc}")
+    try:
+        test_survives_sparse_scheduling()
+    except FileNotFoundError as exc:
+        print(f"  skipped sparse-schedule test: {exc}")
 
     print("\n" + "=" * 66)
     if FAILURES:

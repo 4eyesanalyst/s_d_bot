@@ -32,7 +32,9 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Dukascopy occasionally stalls for minutes at a time; 15 was
+    # killing roughly one run in five.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
