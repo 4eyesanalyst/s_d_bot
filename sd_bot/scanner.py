@@ -7,9 +7,13 @@ stops out -- so the exit is delivered as reliably as the entry.
 
 Three alert kinds:
 
-    APPROACHING  price is nearing a qualifying zone. Get ready, nothing to do.
-    TRIGGERED    price has reached the entry. Entry, stop and both targets given.
-    UPDATE       a live signal filled, hit TP1/TP2, or stopped out.
+    SET ORDER    a zone qualifies and price is heading toward it. This is the
+                 actionable one: place a pending limit order at the given price.
+                 It arrives hours early on purpose, because a scheduled runner
+                 can be delayed and a resting order does not care when it was
+                 told about -- it fills the moment price arrives.
+    TRIGGERED    price reached the level; a resting order has filled.
+    UPDATE       a live signal hit TP1/TP2, stopped out, or was invalidated.
 
 State is persisted, so a restart does not re-alert setups you have already seen.
 """
@@ -92,6 +96,10 @@ class SignalScanner:
         # zone-timeframe bar closes, which would resurrect spent zones, so the
         # fact has to be remembered here and reapplied.
         self.signalled_keys: set[str] = set()
+        # Zones we have already told the user to place an order at. A zone is a
+        # fixed price level: once the pending order is resting there, repeating
+        # the message is noise, not information. One alert per zone, ever.
+        self.ordered_keys: set[str] = set()
         self._last_bar: dict[str, int] = {}
         # Per-symbol zone map, rebuilt only when a zone-timeframe bar closes.
         self._analysis: dict[str, dict] = {}
@@ -112,8 +120,10 @@ class SignalScanner:
             self.active = {k: ActiveSignal(**v) for k, v in raw.get("active", {}).items()}
             self.cooldown = raw.get("cooldown", {})
             self.signalled_keys = set(raw.get("signalled", []))
+            self.ordered_keys = set(raw.get("ordered", []))
         except Exception:
-            self.active, self.cooldown, self.signalled_keys = {}, {}, set()
+            self.active, self.cooldown = {}, {}
+            self.signalled_keys, self.ordered_keys = set(), set()
 
     def _save(self) -> None:
         payload = {
@@ -121,6 +131,7 @@ class SignalScanner:
             "cooldown": self.cooldown,
             # Bounded: only the most recent keys matter, older zones age out.
             "signalled": sorted(self.signalled_keys)[-400:],
+            "ordered": sorted(self.ordered_keys)[-400:],
         }
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -422,8 +433,11 @@ class SignalScanner:
                     "TRIGGERED", symbol,
                     f"{'BUY' if plan.is_long else 'SELL'} {symbol} @ "
                     f"{plan.entry:.{digits}f}",
-                    self._full_alert(cfg, symbol, zone, plan, htf_trend,
-                                     zone_struct, last, digits, pip),
+                    "Your pending order at this level has filled.\n"
+                    "(If you did not place one, the level has now been reached "
+                    "and the entry is gone -- do not chase it.)\n\n"
+                    + self._full_alert(cfg, symbol, zone, plan, htf_trend,
+                                       zone_struct, last, digits, pip),
                     {"side": "BUY" if plan.is_long else "SELL", "kind": "triggered",
                      "score": round(zone.score), "symbol": symbol},
                 )
@@ -431,26 +445,36 @@ class SignalScanner:
 
             if (cfg.alerts.alert_on_approach
                     and distance <= cfg.alerts.approach_atr * atr_value):
-                approach_key = key + ":approach"
-                if self.cooldown.get(approach_key, 0) > time.time():
-                    continue
-                self.cooldown[approach_key] = (
-                    time.time() + cfg.alerts.cooldown_minutes * 60
-                )
+                if key in self.ordered_keys:
+                    continue          # already told you about this level
+                self.ordered_keys.add(key)
+                side = "BUY LIMIT" if plan.is_long else "SELL LIMIT"
+                lots, note = self._size(cfg, symbol, plan.risk_distance)
                 self.emit(
-                    "APPROACHING", symbol,
-                    f"{symbol} approaching {'demand' if zone.kind == DEMAND else 'supply'}"
-                    f" ({grade(zone.score)})",
-                    f"price   {price:.{digits}f}\n"
-                    f"entry   {plan.entry:.{digits}f}  "
+                    "SET ORDER", symbol,
+                    f"{side} {symbol} @ {plan.entry:.{digits}f}",
+                    f"Place this now as a PENDING order. It fills by itself when\n"
+                    f"price arrives -- which is how the strategy was tested.\n\n"
+                    f"TYPE    {side}\n"
+                    f"ENTRY   {plan.entry:.{digits}f}   "
                     f"({distance / pip:.0f} pips away)\n"
-                    f"stop    {plan.stop:.{digits}f}\n"
-                    f"target  {plan.tp2:.{digits}f}  ({plan.rr2:.1f}R)\n"
-                    f"zone    {zone.pattern} {grade(zone.score)} "
-                    f"score {zone.score:.0f}\n\n"
-                    f"Nothing to do yet. Alert will follow if price reaches entry"
-                    + ("" if tradeable else "\nNOTE: currently outside session hours."),
-                    {"side": "", "kind": "approach", "symbol": symbol},
+                    f"STOP    {plan.stop:.{digits}f}   "
+                    f"({plan.risk_distance / pip:.0f} pips risk)\n"
+                    f"TP1     {plan.tp1:.{digits}f}   close "
+                    f"{cfg.signal.tp1_fraction:.0%} at {cfg.signal.tp1_r:.2f}R\n"
+                    f"TP2     {plan.tp2:.{digits}f}   ({plan.rr2:.1f}R)\n\n"
+                    f"SIZE    {lots}\n"
+                    f"        {note}\n\n"
+                    f"ZONE    {zone.pattern} grade {grade(zone.score)} "
+                    f"({zone.score:.0f}/100), departure "
+                    f"{zone.departure_ratio:.1f}x\n\n"
+                    f"If price never reaches it, cancel the order. You will get a\n"
+                    f"follow-up either way."
+                    + ("" if tradeable else
+                       "\n\nNOTE: outside session hours right now."),
+                    {"side": "BUY" if plan.is_long else "SELL",
+                     "kind": "set_order", "symbol": symbol,
+                     "score": round(zone.score)},
                 )
                 return
 

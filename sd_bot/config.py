@@ -191,8 +191,15 @@ class AlertConfig:
     # Re-alert the same zone at most this often (minutes). Stops a price that
     # hovers on a proximal line from firing the same signal repeatedly.
     cooldown_minutes: int = 240
-    # Warn when a setup is this close to its entry, before it triggers.
-    approach_atr: float = 0.5
+    # How far out to send the actionable "place a pending order" alert, in
+    # multiples of entry-timeframe ATR.
+    #
+    # This is the alert that matters. The strategy fills a *resting limit order*
+    # at the zone -- the backtest never assumes you saw a message and reacted.
+    # A scheduled runner can be 90+ minutes late, so an alert fired when price
+    # is already touching the zone is useless. Fired hours early, latency stops
+    # mattering entirely: the order is already at the broker when price arrives.
+    approach_atr: float = 4.0
     alert_on_approach: bool = True
     # Send a short summary of what is being watched, every N hours (0 = never).
     heartbeat_hours: int = 8
