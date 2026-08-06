@@ -220,8 +220,7 @@ def test_survives_sparse_scheduling() -> None:
     the bot is blind to the rest and captures a fraction of its signals -- while
     looking perfectly healthy. This measures capture at realistic run spacings.
     """
-    print("
-test_survives_sparse_scheduling")
+    print("\ntest_survives_sparse_scheduling")
 
     def run(stride: int) -> set:
         cfg = Config.load("config.yaml")
