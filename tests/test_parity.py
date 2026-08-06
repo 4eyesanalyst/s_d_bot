@@ -151,7 +151,17 @@ def run_parity(symbol: str, start: str, end: str, unlimited: bool = False) -> No
 
     m15 = series["M15"]
     step = 900
+    # Skip the replay warm-up. The scanner needs a minimum history window before
+    # it can analyse anything; live it always has that (the feed seeds from cache
+    # or downloads it), but a replay has to accumulate it bar by bar. Comparing
+    # over those first bars measures the test harness, not the bot.
+    warmup = 0
     for i in range(len(m15)):
+        if int(m15.time[i]) >= int(series["H1"].time[min(140, len(series["H1"]) - 1)]):
+            warmup = i
+            break
+    bt_cutoff = int(m15.time[warmup])
+    for i in range(warmup, len(m15)):
         close_time = int(m15.time[i]) + step
         feed.advance_to(close_time)
         # track() resolves live signals (fill / TP / stop). Without it they
@@ -171,7 +181,7 @@ def run_parity(symbol: str, start: str, end: str, unlimited: bool = False) -> No
         (s.symbol, s.direction, round(s.entry, 5))
         for s in scanner.all_signalled
     }
-    bt_simple = {(sym, d, e) for sym, _, d, e in bt_entries}
+    bt_simple = {(sym, d, e) for sym, ts, d, e in bt_entries if ts >= bt_cutoff}
 
     print(f"  backtester took     {len(bt_simple)} entries")
     print(f"  scanner signalled   {len(sc_entries)} entries")

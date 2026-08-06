@@ -165,7 +165,13 @@ def find_zones(
 
     zones: list[Zone] = []
     first = atr_period + cfg.leg_in_lookback + 1
-    last = n - cfg.leg_lookahead - 1
+    # Scan right up to the newest bar. Reserving `leg_lookahead` bars at the end
+    # would blind a live scanner to any zone whose departure has only just
+    # completed -- and those are exactly the zones price is about to return to.
+    # `_departure` already clamps its own window to the end of the data, so a
+    # zone near the edge simply gets less room to prove itself, which is correct
+    # rather than something to guard against.
+    last = n - 1
 
     i = first
     while i < last:
