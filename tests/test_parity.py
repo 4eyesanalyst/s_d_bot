@@ -216,7 +216,9 @@ def main() -> int:
     print("=" * 66)
     print("  BACKTEST / LIVE PARITY")
     print("=" * 66)
-    for symbol in ("XAUUSD", "EURUSD"):
+    import os
+    symbols = os.environ.get("PARITY_SYMBOLS", "XAUUSD,EURUSD,USDJPY").split(",")
+    for symbol in symbols:
         try:
             run_parity(symbol, "2025-01-01", "2025-04-01", unlimited=True)
             run_parity(symbol, "2025-01-01", "2025-04-01", unlimited=False)
