@@ -29,8 +29,12 @@ execution:
   #   winter  London 08:00-16:30, New York 13:00-22:00 UTC
   # Measured against 24h trading this gives up roughly a third of the setups
   # and buys a materially better drawdown (out-of-sample 6.6% -> 3.9%).
+  # 07:00-22:59 UTC covers London open through New York close in BOTH DST
+  # regimes, so the bot never loses an hour when the clocks change:
+  #   summer  London opens 07:00, New York closes 21:00 UTC
+  #   winter  London opens 08:00, New York closes 22:00 UTC
   session_hours_utc: [7, 8, 9, 10, 11, 12, 13, 14, 15,
-                      16, 17, 18, 19, 20, 21]
+                      16, 17, 18, 19, 20, 21, 22]
   trade_days: [0, 1, 2, 3, 4]      # Mon-Fri
   friday_close_hour_utc: 20        # flatten before the weekend gap
 

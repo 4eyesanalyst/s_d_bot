@@ -2,13 +2,16 @@ name: Supply & Demand signals
 
 # Runs on GitHub's servers, so your machine can be off.
 #
-# Every 30 minutes through the London and New York sessions, Monday to Friday.
+# Every 20 minutes from the London open to the New York close, Monday to Friday.
+# 07:00-22:59 UTC covers both DST regimes (summer London opens 07:00 and NY
+# closes 21:00; winter it is 08:00 and 22:00). Outside these hours the workflow
+# does not run at all, so the bot is effectively off overnight and at weekends.
 # GitHub's scheduler is best-effort and can drift 5-15 minutes when it is busy;
 # that is tolerable here because signals are limit orders resting at a zone,
 # not market orders that need the exact second.
 on:
   schedule:
-    - cron: "*/30 7-21 * * 1-5"
+    - cron: "*/20 7-22 * * 1-5"
   workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
     inputs:
       force:
