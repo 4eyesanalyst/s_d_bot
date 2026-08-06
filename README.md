@@ -7,6 +7,9 @@ limits that assume the strategy will go wrong regularly, because it will.
 
 Backtest first. Then demo. Then, only if the numbers hold up, live.
 
+> **[PROJECT_LOG.md](PROJECT_LOG.md)** — the full record: what was built, what
+> was proven, the twelve bugs found along the way, and what is still open.
+
 ---
 
 ## Quick start
