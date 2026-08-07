@@ -12,7 +12,6 @@ name: Supply & Demand signals
 on:
   schedule:
     - cron: "*/20 7-22 * * 1-5"      # scan, London open -> NY close
-    - cron: "10 7 * * 1-5"           # daily heartbeat at the London open
   workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
     inputs:
       force:
@@ -60,15 +59,14 @@ jobs:
 
       # A quiet market and a dead bot look identical from the outside. One
       # message a day at the London open is what distinguishes them.
-      - name: Daily heartbeat
-        if: github.event.schedule == '10 7 * * 1-5'
+      - name: Daily heartbeat (manual only; the scan sends it automatically)
+        if: false
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python github_poll.py --heartbeat
 
       - name: Scan for signals
-        if: github.event.schedule != '10 7 * * 1-5'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

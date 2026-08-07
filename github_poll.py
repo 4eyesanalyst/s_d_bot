@@ -41,8 +41,9 @@ def main() -> int:
         ]
     cfg.validate()
 
-    # A scheduled runner has no memory of "did I already say this", so the
-    # heartbeat is driven by the workflow instead of a timer inside the process.
+    # The in-process timer is useless here: each run is a fresh process. The
+    # heartbeat is instead pinned to the first surviving scan of each UTC day,
+    # tracked in the committed state file.
     cfg.alerts.heartbeat_hours = 0
 
     print(f"[{stamp}Z] scanning {', '.join(cfg.execution.symbols)}")
@@ -61,29 +62,27 @@ def main() -> int:
                             state_dir=cfg.alerts.directory)
 
     if args.heartbeat:
-        # This strategy signals roughly 2-3 times a week, so silence is normal
-        # and a dead bot looks exactly like a quiet market. The daily heartbeat
-        # is the only thing that tells them apart.
-        lines = [f"Watching {', '.join(cfg.execution.symbols)}",
-                 f"Session {min(cfg.execution.session_hours_utc):02d}:00-"
-                 f"{max(cfg.execution.session_hours_utc):02d}:59 UTC, Mon-Fri",
-                 ""]
-        if scanner.active:
-            lines.append(f"{len(scanner.active)} live signal(s):")
-            for s in scanner.active.values():
-                lines.append(
-                    f"  {s.symbol} {'BUY' if s.is_long else 'SELL'} "
-                    f"{s.status} @ {s.entry}  stop {s.stop}  tp2 {s.tp2}"
-                )
-        else:
-            lines.append("No live signals. Waiting for price to reach a zone.")
-        lines += ["", "If this message stops arriving, the bot has stopped."]
-        scanner.emit("STATUS", "", "Signal bot alive", "\n".join(lines),
-                     {"kind": "heartbeat"})
+        send_heartbeat(cfg, scanner)
         print("heartbeat sent")
         return 0
 
     before = len(scanner.active)
+
+    # Daily heartbeat, piggybacked on whichever scan runs first today.
+    #
+    # It used to have its own once-a-day cron, which made the liveness check the
+    # least reliable thing in the system: GitHub drops throttled scheduled runs,
+    # and a cron that fires once has no second chance. The scan cron fires ~48
+    # times a day, so pinning the heartbeat to the first survivor makes it
+    # exactly as reliable as the scanning itself.
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if scanner.last_heartbeat_day != today:
+        try:
+            send_heartbeat(cfg, scanner)
+            scanner.last_heartbeat_day = today
+            print(f"daily heartbeat sent ({today})")
+        except Exception:
+            traceback.print_exc()
 
     try:
         scanner.poll()
@@ -93,10 +92,34 @@ def main() -> int:
 
     after = len(scanner.active)
     print(f"live signals: {before} -> {after}")
-    for sig in scanner.active.values():
-        print(f"  {sig.symbol} {'BUY' if sig.is_long else 'SELL'} "
-              f"{sig.status} entry={sig.entry}")
     return 0
+
+
+def send_heartbeat(cfg, scanner) -> None:
+    """Proof of life.
+
+    This strategy signals 2-3 times a week, so silence is normal and a dead bot
+    looks exactly like a quiet market. This is the only thing that tells them
+    apart.
+    """
+    lines = [
+        f"Watching {', '.join(cfg.execution.symbols)}",
+        f"Session {min(cfg.execution.session_hours_utc):02d}:00-"
+        f"{max(cfg.execution.session_hours_utc):02d}:59 UTC, Mon-Fri",
+        "",
+    ]
+    if scanner.active:
+        lines.append(f"{len(scanner.active)} live signal(s):")
+        for s in scanner.active.values():
+            lines.append(
+                f"  {s.symbol} {'BUY' if s.is_long else 'SELL'} "
+                f"{s.status} @ {s.entry}  stop {s.stop}  tp2 {s.tp2}"
+            )
+    else:
+        lines.append("No live signals. Waiting for price to reach a zone.")
+    lines += ["", "If this message stops arriving, the bot has stopped."]
+    scanner.emit("STATUS", "", "Signal bot alive", "\n".join(lines),
+                 {"kind": "heartbeat"})
 
 
 if __name__ == "__main__":

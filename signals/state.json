@@ -2,5 +2,6 @@
   "active": {},
   "cooldown": {},
   "signalled": [],
-  "ordered": []
+  "ordered": [],
+  "heartbeat_day": "2026-08-07"
 }

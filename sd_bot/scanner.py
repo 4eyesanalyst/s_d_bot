@@ -104,6 +104,9 @@ class SignalScanner:
         # Per-symbol zone map, rebuilt only when a zone-timeframe bar closes.
         self._analysis: dict[str, dict] = {}
         self._last_heartbeat = 0.0
+        # UTC date of the last daily heartbeat, persisted so a scheduled runner
+        # (a fresh process each time) knows whether today's has already gone.
+        self.last_heartbeat_day = ""
         self._load()
 
     @staticmethod
@@ -121,6 +124,7 @@ class SignalScanner:
             self.cooldown = raw.get("cooldown", {})
             self.signalled_keys = set(raw.get("signalled", []))
             self.ordered_keys = set(raw.get("ordered", []))
+            self.last_heartbeat_day = raw.get("heartbeat_day", "")
         except Exception:
             self.active, self.cooldown = {}, {}
             self.signalled_keys, self.ordered_keys = set(), set()
@@ -132,6 +136,7 @@ class SignalScanner:
             # Bounded: only the most recent keys matter, older zones age out.
             "signalled": sorted(self.signalled_keys)[-400:],
             "ordered": sorted(self.ordered_keys)[-400:],
+            "heartbeat_day": self.last_heartbeat_day,
         }
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
