@@ -55,8 +55,28 @@ def main() -> int:
         return 0
 
     out = build(cfg)
-    for line in out.preflight():
+    preflight = out.preflight()
+    for line in preflight:
         print(line)
+
+    # Refuse to run with a broken delivery channel.
+    #
+    # A scan that finds a setup, fails to send it, and exits 0 is the worst
+    # possible outcome: the run goes green, the zone is marked as already
+    # alerted, and the user hears nothing. Exiting non-zero turns that into a
+    # failed run, which GitHub emails about -- so a bad secret is noisy within
+    # minutes instead of invisible for days.
+    broken = [ln for ln in preflight if ln.strip().startswith("DEAD")]
+    if broken:
+        print("\nFATAL: a configured alert channel is not working.")
+        for ln in broken:
+            print(f"  {ln.strip()}")
+        print(
+            "\nNothing was scanned, because a signal that cannot be delivered "
+            "is worse than no signal.\nCheck the repository secrets: "
+            "Settings -> Secrets and variables -> Actions."
+        )
+        return 1
 
     scanner = SignalScanner(cfg, out, Feed("dukascopy"),
                             state_dir=cfg.alerts.directory)

@@ -55,6 +55,10 @@ BARS_ZONE = 4000
 BARS_BIAS = 1500
 
 
+class DeliveryError(RuntimeError):
+    """An alert was generated but never reached the user."""
+
+
 @dataclass
 class ActiveSignal:
     """A signal we have alerted on and are still following."""
@@ -551,11 +555,31 @@ class SignalScanner:
 
     def emit(self, kind: str, symbol: str, subject: str, body: str,
              meta: dict | None = None) -> None:
+        """Send an alert. Raises if it did not reach the user.
+
+        Console and file always "succeed" -- they are a local log, not a way of
+        reaching someone who is not at the machine. Treating them as delivery
+        let a broken Telegram token look like a working bot: alerts were
+        recorded as sent, the zone was marked as already-ordered, and nothing
+        ever arrived. Silence is the one failure mode this system cannot afford,
+        so a remote channel failing is now an error, not a log line.
+        """
         meta = {"kind": kind.lower(), "symbol": symbol, **(meta or {})}
         results = self.out.send(f"[{kind}] {subject}", body, meta)
+
+        local = {"console", "file"}
+        remote = {n: ok for n, ok in results.items() if n not in local}
         dead = [n for n, ok in results.items() if not ok]
         if dead:
             print(f"[{_now()}] delivery failed on: {', '.join(dead)}", flush=True)
+
+        # If remote channels are configured, at least one has to have worked.
+        if remote and not any(remote.values()):
+            raise DeliveryError(
+                f"alert '{subject}' reached no remote channel "
+                f"({', '.join(sorted(remote))} all failed). "
+                f"Check TELEGRAM_TOKEN / TELEGRAM_CHAT_ID."
+            )
 
     def startup_report(self) -> None:
         ex = self.cfg.execution
