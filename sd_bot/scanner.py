@@ -182,13 +182,35 @@ class SignalScanner:
             if tick is None:
                 continue
             bid, ask = tick
-            price = bid if sig.is_long else ask
+            close = bid if sig.is_long else ask
             digits = sources.spec_for(sig.symbol).digits
 
+            # Levels are hit by the bar's *range*, not its close.
+            #
+            # A broker fills a take-profit the instant price touches it. Judging
+            # exits on the closing price alone means a spike straight through
+            # TP1 that closes back below it is never reported -- the trade is
+            # closed at the broker while the bot still thinks it is running.
+            # Worse, a scheduled runner may not wake for an hour, so several
+            # bars can pass between checks. Both are handled by scanning every
+            # bar since the signal was last evaluated and using its extremes.
+            recent = self.feed.bars(sig.symbol, self.cfg.execution.entry_timeframe, 12)
+            if recent is not None and len(recent):
+                hi = float(recent.high[-8:].max())
+                lo = float(recent.low[-8:].min())
+            else:
+                hi = lo = close
+
+            # For a long, favourable levels are reached by the high and adverse
+            # ones by the low; mirrored for a short.
+            best = hi if sig.is_long else lo
+            worst = lo if sig.is_long else hi
+            price = close
+
             if sig.status == "pending":
-                reached = price <= sig.entry if sig.is_long else price >= sig.entry
+                reached = worst <= sig.entry if sig.is_long else worst >= sig.entry
                 # A zone that fails before we ever fill is dead, not a trade.
-                blown = price < sig.stop if sig.is_long else price > sig.stop
+                blown = worst < sig.stop if sig.is_long else worst > sig.stop
                 if blown:
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} setup INVALIDATED before entry",
@@ -206,7 +228,7 @@ class SignalScanner:
                                "kind": "filled"})
 
             elif sig.status == "filled":
-                if (price >= sig.tp1) if sig.is_long else (price <= sig.tp1):
+                if (best >= sig.tp1) if sig.is_long else (best <= sig.tp1):
                     sig.status = "tp1"
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} TP1 HIT @ {sig.tp1:.{digits}f}",
@@ -216,7 +238,7 @@ class SignalScanner:
                               f"TP2 remains {sig.tp2:.{digits}f} "
                               f"(+{self._pips(sig, sig.tp2):.0f} pips).",
                               {"side": "", "kind": "tp1"})
-                elif (price <= sig.stop) if sig.is_long else (price >= sig.stop):
+                elif (worst <= sig.stop) if sig.is_long else (worst >= sig.stop):
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} STOPPED OUT @ {sig.stop:.{digits}f}",
                               f"{self._pips(sig, sig.stop):.0f} pips. "
@@ -225,13 +247,13 @@ class SignalScanner:
                     del self.active[key]
 
             elif sig.status == "tp1":
-                if (price >= sig.tp2) if sig.is_long else (price <= sig.tp2):
+                if (best >= sig.tp2) if sig.is_long else (best <= sig.tp2):
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} TP2 HIT @ {sig.tp2:.{digits}f}",
                               f"+{self._pips(sig, sig.tp2):.0f} pips. Trade complete.",
                               {"side": "", "kind": "tp2"})
                     del self.active[key]
-                elif (price <= sig.entry) if sig.is_long else (price >= sig.entry):
+                elif (worst <= sig.entry) if sig.is_long else (worst >= sig.entry):
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} back to BREAKEVEN",
                               f"Price returned to entry {sig.entry:.{digits}f} "
