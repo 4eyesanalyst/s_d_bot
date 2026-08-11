@@ -2,6 +2,8 @@
   "active": {},
   "cooldown": {},
   "signalled": [],
-  "ordered": [],
+  "ordered": [
+    "XAUUSD:H1:1786424400:-1"
+  ],
   "heartbeat_day": "2026-08-11"
 }
