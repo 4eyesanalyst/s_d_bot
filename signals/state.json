@@ -1,7 +1,26 @@
 {
-  "active": {},
-  "cooldown": {},
-  "signalled": [],
+  "active": {
+    "XAUUSD:H1:1786446000:1": {
+      "key": "XAUUSD:H1:1786446000:1",
+      "symbol": "XAUUSD",
+      "direction": 1,
+      "entry": 4372.225,
+      "stop": 4365.378858027822,
+      "tp1": 4380.782677465223,
+      "tp2": 4406.518858027822,
+      "score": 65.82276021559018,
+      "zone_note": "DBR B H1 dep=4.3x",
+      "created": "2026-08-11T15:50:29.283263+00:00",
+      "status": "filled",
+      "alerted_approach": false
+    }
+  },
+  "cooldown": {
+    "XAUUSD:H1:1786446000:1": 1786477829.2832901
+  },
+  "signalled": [
+    "XAUUSD:H1:1786446000:1"
+  ],
   "ordered": [
     "XAUUSD:H1:1786446000:1"
   ],
