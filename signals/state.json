@@ -11,7 +11,7 @@
       "score": 66.45929278057945,
       "zone_note": "RBR B H1 dep=4.0x",
       "created": "2026-08-12T17:00:43.414412+00:00",
-      "status": "filled",
+      "status": "tp1",
       "alerted_approach": false
     }
   },
