@@ -33,13 +33,6 @@ on:
 
 # Never let two scans run at once: they would both write state and one would
 # lose, which is how a signal gets alerted twice or silently dropped.
-concurrency:
-  group: signals
-  # A fresh watcher replaces a running one. Queuing would leave the market
-  # unwatched while a stale job finishes, and GitHub cancels surplus pending
-  # runs anyway.
-  cancel-in-progress: true
-
 permissions:
   contents: write             # needed to commit signal state back
 
@@ -51,14 +44,36 @@ jobs:
     timeout-minutes: 25
 
     steps:
+      # An hourly trigger is a *safety net*, not a restart. If a watcher is
+      # already running, this exits in seconds and leaves it alone. If the last
+      # one died or GitHub dropped a slot, this starts a fresh one. That gives
+      # continuous 6-hour coverage AND recovery within the hour, which neither
+      # a bare long cron nor cancel-in-progress could do on its own.
+      - name: Stand down if a watcher is already live
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          live=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?status=in_progress&per_page=50"                    --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length")
+          echo "other watchers running: $live"
+          if [ "${live:-0}" -gt 0 ]; then
+            echo "a watcher is already live - standing down"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       # Price history is large and slow to fetch. Caching it turns a 5-minute
@@ -66,6 +81,7 @@ jobs:
       # entries are immutable, so each run writes a new one and restores from
       # the most recent prefix match.
       - name: Restore price cache
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: data
@@ -93,8 +109,10 @@ jobs:
       # This is what removes GitHub's 60-90 minute scheduler lag from the path
       # between a bar closing and the alert reaching the phone.
       - name: Watch the market
-        if: github.event_name == 'schedule' || inputs.watch_minutes != '0'
-        timeout-minutes: 120
+        if: >-
+          steps.guard.outputs.skip != 'true' &&
+          (github.event_name == 'schedule' || inputs.watch_minutes != '0')
+        timeout-minutes: 355
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -106,8 +124,10 @@ jobs:
       # Committing state back is what gives the bot memory between runs, and it
       # keeps the repository active so GitHub does not pause the schedule after
       # 60 days of quiet.
+      # always() so state survives cancellation, but not when we stood down --
+      # there is no checkout in that case and git would fail on an empty tree.
       - name: Persist signal state
-        if: always()
+        if: always() && steps.guard.outputs.skip != 'true'
         run: |
           git config user.name  "sd-bot"
           git config user.email "sd-bot@users.noreply.github.com"
