@@ -103,7 +103,10 @@ jobs:
 
       # One scan, for a manual "is it working" check.
       - name: Single scan (manual runs)
-        if: github.event_name == 'workflow_dispatch' && inputs.watch_minutes == '0'
+        if: >-
+          steps.guard.outputs.skip != 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.watch_minutes == '0'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -113,6 +116,7 @@ jobs:
       # This is what removes GitHub's 60-90 minute scheduler lag from the path
       # between a bar closing and the alert reaching the phone.
       - name: Watch the market
+        id: watch
         if: >-
           steps.guard.outputs.skip != 'true' &&
           (github.event_name == 'schedule' || inputs.watch_minutes != '0')
@@ -154,15 +158,23 @@ jobs:
       # A PAT is required because GitHub deliberately refuses to let the built-in
       # GITHUB_TOKEN start new workflow runs. Without WORKFLOW_PAT the bot still
       # works, but falls back to the unreliable scheduler.
+      # Only a run that actually watched hands over. A stood-down run or a
+      # one-off manual scan must not relaunch: dispatching with no inputs makes
+      # watch_minutes default to "0", so the successor is another single scan,
+      # which relaunches in turn. That produced nine runs in five minutes.
       - name: Launch the next watcher
-        if: always() && steps.guard.outputs.skip != 'true'
+        if: always() && steps.watch.conclusion != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "WORKFLOW_PAT not set - relying on the cron fallback."
-            echo "Add it so the chain can sustain itself."
             exit 0
           fi
           echo "requesting the next watcher..."
-          gh workflow run signals.yml --repo "${GITHUB_REPOSITORY}" --ref main             && echo "next watcher queued"             || echo "could not queue the next watcher; cron will recover"
+          # Pass watch_minutes explicitly, or the successor is a single scan.
+          gh workflow run signals.yml \
+             --repo "${GITHUB_REPOSITORY}" --ref main \
+             -f watch_minutes=330 -f force=false \
+            && echo "next watcher queued" \
+            || echo "could not queue the next watcher; cron will recover"
