@@ -48,12 +48,6 @@ def main() -> int:
 
     print(f"[{stamp}Z] scanning {', '.join(cfg.execution.symbols)}")
 
-    if not args.force and not args.heartbeat and (
-            not in_session(now, cfg.execution)
-            or is_week_close(now, cfg.execution)):
-        print("outside session hours -- nothing to do")
-        return 0
-
     out = build(cfg)
     preflight = out.preflight()
     for line in preflight:
@@ -103,6 +97,20 @@ def main() -> int:
             print(f"daily heartbeat sent ({today})")
         except Exception:
             traceback.print_exc()
+
+    # The session gate sits *after* the heartbeat on purpose.
+    #
+    # The heartbeat is a liveness signal, not a trading action -- it should go
+    # out whether or not the market is open to us. Gating it meant the morning
+    # message could only be sent by a run that landed inside session hours, and
+    # GitHub delivers the 07:00 cron around an hour late, so it arrived mid
+    # morning or not at all. Scanning still respects the session.
+    if not args.force and (
+            not in_session(now, cfg.execution)
+            or is_week_close(now, cfg.execution)):
+        print("outside session hours -- heartbeat only, no scan")
+        scanner._save()
+        return 0
 
     try:
         scanner.poll()

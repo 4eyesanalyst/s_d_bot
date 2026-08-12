@@ -11,7 +11,9 @@ name: Supply & Demand signals
 # not market orders that need the exact second.
 on:
   schedule:
-    - cron: "*/20 7-22 * * 1-5"      # scan, London open -> NY close
+    - cron: "*/20 5-22 * * 1-5"      # GitHub delivers these ~1h late, so
+                                    # starting at 05:00 puts the morning
+                                    # heartbeat on your phone before 07:00
   workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
     inputs:
       force:
