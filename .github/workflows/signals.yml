@@ -1,14 +1,17 @@
 name: Supply & Demand signals
 
-# Runs on GitHub's servers, so your machine can be off.
+# Runs entirely on GitHub's servers. Your machine can be off.
 #
-# Every 20 minutes from the London open to the New York close, Monday to Friday.
-# 07:00-22:59 UTC covers both DST regimes (summer London opens 07:00 and NY
-# closes 21:00; winter it is 08:00 and 22:00). Outside these hours the workflow
-# does not run at all, so the bot is effectively off overnight and at weekends.
-# GitHub's scheduler is best-effort and can drift 5-15 minutes when it is busy;
-# that is tolerable here because signals are limit orders resting at a zone,
-# not market orders that need the exact second.
+# A watcher runs for up to six hours, polling every 90 seconds, and launches its
+# successor before it exits. That self-sustaining chain -- not the cron below --
+# is what keeps the bot alive. GitHub's `schedule` event is best-effort and was
+# observed silently dropping runs on three separate days, once leaving the market
+# unwatched for twelve hours; it is kept only as a fallback that restarts the
+# chain if a link ever breaks.
+#
+# Session 07:00-22:59 UTC covers both DST regimes (summer London opens 07:00 and
+# NY closes 21:00; winter it is 08:00 and 22:00). The watcher idles outside those
+# hours rather than exiting, so it is ready the moment the session reopens.
 on:
   schedule:
     # Hourly triggers, each starting a watcher that polls for hours.
@@ -39,9 +42,10 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    # Dukascopy occasionally stalls for minutes at a time; 15 was
-    # killing roughly one run in five.
-    timeout-minutes: 25
+    # Must exceed the watcher's own runtime, or the job is killed mid-watch.
+    # This was 25, which would have terminated every six-hour watcher after
+    # twenty-five minutes regardless of the step-level timeout.
+    timeout-minutes: 360
 
     steps:
       # An hourly trigger is a *safety net*, not a restart. If a watcher is
@@ -138,3 +142,27 @@ jobs:
             git commit -m "signal state $(date -u '+%Y-%m-%d %H:%M')Z"
             git push
           fi
+
+      # Hand over to the next watcher.
+      #
+      # This is what makes the bot independent of GitHub's scheduler. `schedule`
+      # is best-effort: it silently dropped runs three times, once leaving the
+      # market unwatched for twelve hours. Instead each watcher launches its
+      # successor before exiting, so the chain sustains itself. The cron above
+      # is now only a fallback that restarts the chain if a link ever breaks.
+      #
+      # A PAT is required because GitHub deliberately refuses to let the built-in
+      # GITHUB_TOKEN start new workflow runs. Without WORKFLOW_PAT the bot still
+      # works, but falls back to the unreliable scheduler.
+      - name: Launch the next watcher
+        if: always() && steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "WORKFLOW_PAT not set - relying on the cron fallback."
+            echo "Add it so the chain can sustain itself."
+            exit 0
+          fi
+          echo "requesting the next watcher..."
+          gh workflow run signals.yml --repo "${GITHUB_REPOSITORY}" --ref main             && echo "next watcher queued"             || echo "could not queue the next watcher; cron will recover"
