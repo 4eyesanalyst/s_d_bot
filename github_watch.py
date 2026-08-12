@@ -46,7 +46,7 @@ def _now() -> str:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="config.yaml")
-    p.add_argument("--max-minutes", type=float, default=320.0,
+    p.add_argument("--max-minutes", type=float, default=110.0,
                    help="exit cleanly before the Actions job timeout")
     p.add_argument("--interval", type=int, default=90,
                    help="seconds between passes")

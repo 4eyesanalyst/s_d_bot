@@ -11,10 +11,15 @@ name: Supply & Demand signals
 # not market orders that need the exact second.
 on:
   schedule:
-    - cron: "0 5,10,15,20 * * 1-5"    # four long watchers a day; each
-                                    # polls continuously for ~5.5h, so
-                                    # GitHub's scheduler only matters
-                                    # at handover, not per signal
+    # Hourly triggers, each starting a watcher that polls for hours.
+    #
+    # Four slots a day was a mistake: GitHub silently drops scheduled runs on
+    # the free tier, and with only four chances a single miss costs five hours
+    # of coverage - which is exactly what happened. Redundant triggers are free
+    # because cancel-in-progress means a new watcher simply takes over from the
+    # running one, so a dropped slot is recovered within the hour instead of
+    # leaving the market unwatched.
+    - cron: "0 5-22 * * 1-5"
   workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
     inputs:
       force:
@@ -89,7 +94,7 @@ jobs:
       # between a bar closing and the alert reaching the phone.
       - name: Watch the market
         if: github.event_name == 'schedule' || inputs.watch_minutes != '0'
-        timeout-minutes: 340
+        timeout-minutes: 120
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
