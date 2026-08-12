@@ -21,6 +21,10 @@ on:
         description: "Scan even outside session hours"
         type: boolean
         default: false
+      watch_minutes:
+        description: "Watch continuously for N minutes (0 = single scan)"
+        type: string
+        default: "0"
 
 # Never let two scans run at once: they would both write state and one would
 # lose, which is how a signal gets alerted twice or silently dropped.
@@ -74,7 +78,7 @@ jobs:
 
       # One scan, for a manual "is it working" check.
       - name: Single scan (manual runs)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.watch_minutes == '0'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -84,12 +88,15 @@ jobs:
       # This is what removes GitHub's 60-90 minute scheduler lag from the path
       # between a bar closing and the alert reaching the phone.
       - name: Watch the market
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || inputs.watch_minutes != '0'
         timeout-minutes: 340
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python github_watch.py --max-minutes 330 --interval 90
+        run: |
+          MINUTES="${{ inputs.watch_minutes || '0' }}"
+          if [ "$MINUTES" = "0" ] || [ -z "$MINUTES" ]; then MINUTES=330; fi
+          python github_watch.py --max-minutes "$MINUTES" --interval 90
 
       # Committing state back is what gives the bot memory between runs, and it
       # keeps the repository active so GitHub does not pause the schedule after
