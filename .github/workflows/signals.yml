@@ -142,10 +142,31 @@ jobs:
           git add -A signals/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no state change"
-          else
-            git commit -m "signal state $(date -u '+%Y-%m-%d %H:%M')Z"
-            git push
+            exit 0
           fi
+          git commit -m "signal state $(date -u '+%Y-%m-%d %H:%M')Z"
+
+          # Rebase before pushing, and retry.
+          #
+          # A bare push fails whenever anything else has committed since this
+          # watcher checked out -- another run, or a human. That failure is not
+          # cosmetic: the state file carries heartbeat_day, so when it cannot be
+          # saved every later watcher reads a stale date, believes the daily
+          # heartbeat is still owed, and sends another one. Duplicate heartbeats
+          # and a missing alert log were both this.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "state pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push rejected, rebasing onto origin/main (attempt $attempt)"
+            git fetch origin main
+            # Ours wins on the state file: this run holds the newest truth.
+            git rebase -X ours origin/main || { git rebase --abort; exit 1; }
+            sleep $((attempt * 3))
+          done
+          echo "could not persist state after 5 attempts"
+          exit 1
 
       # Hand over to the next watcher.
       #
