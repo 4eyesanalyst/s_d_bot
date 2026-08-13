@@ -250,6 +250,57 @@ def test_bad_data_is_rejected():
            open=np.zeros(50), low=np.zeros(50), close=np.zeros(50))
 
 
+def test_exits_ignore_price_before_entry():
+    """A target can only be hit by price that traded after we were filled.
+
+    Regression guard for a live false alarm: the tracker scanned a fixed
+    eight-bar window regardless of when the trade filled, and reported TP1 on a
+    gold trade using a spike from two hours *before* entry. The user was told to
+    bank half at a price that never traded while they were in the trade.
+    """
+    from sd_bot.scanner import ActiveSignal
+
+    entry, stop, tp1 = 4406.06, 4395.51, 4419.26
+    fill_ts = EPOCH + 20 * 900
+
+    # Bars: a big spike well above TP1 *before* the fill, quiet ones after.
+    rows = []
+    for i in range(30):
+        if i < 20:
+            rows.append((4420.0, 4441.0, 4415.0, 4425.0))   # pre-entry spike
+        else:
+            rows.append((4406.0, 4418.0, 4400.0, 4412.0))   # post-entry, below TP1
+    bars = make_bars(rows, tf="M15")
+    bars.time[:] = np.arange(EPOCH, EPOCH + 30 * 900, 900, dtype=np.int64)[:30]
+
+    sig = ActiveSignal(
+        key="k", symbol="XAUUSD", direction=LONG, entry=entry, stop=stop,
+        tp1=tp1, tp2=4458.21, score=66.0, zone_note="", created="",
+        status="filled", created_ts=fill_ts, filled_ts=fill_ts,
+    )
+
+    # What the fixed-window code did: last 8 bars regardless of the fill.
+    naive_high = float(bars.high[-8:].max())
+    # What it must do now: only bars at or after the fill.
+    keep = bars.time >= sig.filled_ts
+    correct_high = float(bars.high[keep].max())
+
+    check("pre-entry bars exist that would trip TP1",
+          float(bars.high[:20].max()) >= tp1)
+    check("post-entry price never reaches TP1", correct_high < tp1,
+          f"post-fill high {correct_high:.2f} vs tp1 {tp1:.2f}")
+    check("boundary excludes the pre-entry spike",
+          correct_high < float(bars.high[:20].max()),
+          f"{correct_high:.2f} vs {float(bars.high[:20].max()):.2f}")
+
+    # And the signal must carry a usable boundary at all.
+    check("filled signals record when they filled", sig.filled_ts > 0)
+    check("a fresh ActiveSignal defaults to no boundary",
+          ActiveSignal(key="x", symbol="X", direction=LONG, entry=1.0, stop=0.9,
+                       tp1=1.1, tp2=1.2, score=0, zone_note="",
+                       created="").filled_ts == 0)
+
+
 def test_swings_are_confirmed_late():
     bars = make_bars([
         (1.0, 1.0 + (0.001 if i == 10 else 0.0), 1.0 - 0.0005, 1.0)

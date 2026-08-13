@@ -75,6 +75,12 @@ class ActiveSignal:
     created: str
     status: str = "pending"      # pending -> filled -> tp1 -> closed
     alerted_approach: bool = False
+    # Epoch seconds marking when this signal entered its current phase. Exits
+    # must only be judged against price action *after* that moment: a resting
+    # order cannot be filled by a bar that predates it, and a target cannot be
+    # hit by a spike that happened before entry.
+    created_ts: int = 0
+    filled_ts: int = 0
 
     @property
     def is_long(self) -> bool:
@@ -194,12 +200,27 @@ class SignalScanner:
             # Worse, a scheduled runner may not wake for an hour, so several
             # bars can pass between checks. Both are handled by scanning every
             # bar since the signal was last evaluated and using its extremes.
-            recent = self.feed.bars(sig.symbol, self.cfg.execution.entry_timeframe, 12)
+            # ...but only bars that belong to this phase of the trade.
+            #
+            # A fixed lookback window was wrong and dangerously so: it reported
+            # TP1 on a gold trade using a spike that occurred two hours before
+            # the entry filled. A level can only be counted as hit by price that
+            # traded while we were actually in that state.
+            boundary = sig.filled_ts if sig.status in ("filled", "tp1") \
+                else sig.created_ts
+            recent = self.feed.bars(sig.symbol, self.cfg.execution.entry_timeframe, 24)
+            hi = lo = close
             if recent is not None and len(recent):
-                hi = float(recent.high[-8:].max())
-                lo = float(recent.low[-8:].min())
-            else:
-                hi = lo = close
+                if boundary:
+                    keep = recent.time >= boundary
+                    if keep.any():
+                        hi = float(recent.high[keep].max())
+                        lo = float(recent.low[keep].min())
+                else:
+                    # No boundary recorded (state written before this fix):
+                    # fall back to the latest closed bar only, never a window.
+                    hi = float(recent.high[-1])
+                    lo = float(recent.low[-1])
 
             # For a long, favourable levels are reached by the high and adverse
             # ones by the low; mirrored for a short.
@@ -221,6 +242,8 @@ class SignalScanner:
                     del self.active[key]
                 elif reached:
                     sig.status = "filled"
+                    # From here on, only price after this instant counts.
+                    sig.filled_ts = now
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} ENTRY FILLED @ {sig.entry:.{digits}f}",
                               self._levels(sig, digits),
@@ -453,6 +476,10 @@ class SignalScanner:
                     # Leaving this "pending" would keep the signal open forever
                     # whenever price never closed back through the level.
                     status="filled",
+                    created_ts=now,
+                    # Anchor the exit search here. Without it, targets could be
+                    # reported hit by price that traded before we were filled.
+                    filled_ts=now,
                 )
                 self.active[key] = sig
                 self.all_signalled.append(sig)
