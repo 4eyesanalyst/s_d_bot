@@ -75,6 +75,11 @@ class ActiveSignal:
     created: str
     status: str = "pending"      # pending -> filled -> tp1 -> closed
     alerted_approach: bool = False
+    # Where the stop currently sits. After TP1 the backtester ratchets this
+    # behind swing structure, and 30% of its exits come from that trail. Without
+    # tracking it here the live trader holds a stop the tested system had long
+    # since moved.
+    trail_stop: float = 0.0
     # Epoch seconds marking when this signal entered its current phase. Exits
     # must only be judged against price action *after* that moment: a resting
     # order cannot be filled by a bar that predates it, and a target cannot be
@@ -182,7 +187,75 @@ class SignalScanner:
 
     # -- following open signals -----------------------------------------------
 
+    def _trail_level(self, sig: "ActiveSignal") -> float | None:
+        """Where the backtester would have ratcheted the stop to, if higher.
+
+        Mirrors ``Backtester._trail``: after TP1 the stop follows the most
+        recent opposite swing on the zone timeframe, offset by an ATR buffer.
+        Returns None when there is nothing better than the current stop.
+        """
+        cached = self._analysis.get(sig.symbol)
+        if not cached:
+            return None
+        struct = cached.get("zone_struct")
+        if struct is None:
+            return None
+
+        cfg = self.cfg.for_symbol(sig.symbol)
+        entry = self.feed.bars(sig.symbol, cfg.execution.entry_timeframe, 60)
+        if entry is None or not len(entry):
+            return None
+        buffer = cfg.signal.stop_buffer_atr * float(
+            atr_fn(entry.high, entry.low, entry.close)[-1]
+        )
+
+        last = len(struct.bars) - 1
+        if sig.is_long:
+            swing = struct.recent_swing_low_price(last)
+            if swing is None:
+                return None
+            level = swing - buffer
+            better = level > sig.trail_stop
+        else:
+            swing = struct.recent_swing_high_price(last)
+            if swing is None:
+                return None
+            level = swing + buffer
+            better = level < sig.trail_stop
+
+        if not better:
+            return None
+        # Never trail past the market, or the "stop" is really an exit order.
+        tick = self.feed.tick(sig.symbol)
+        if tick is not None:
+            price = tick[0] if sig.is_long else tick[1]
+            if (price - level) * sig.direction <= 0:
+                return None
+        return level
+
     def track(self, now: int) -> None:
+        # The tested system holds nothing over the weekend: it flattens every
+        # open position on Friday evening, which is how 5% of its trades exit.
+        # A position carried into the gap is taking a risk the backtest never
+        # took, so this has to be told to the trader, not just assumed.
+        if is_week_close(now, self.cfg.execution) and self.active:
+            for key, sig in list(self.active.items()):
+                digits = sources.spec_for(sig.symbol).digits
+                tick = self.feed.tick(sig.symbol)
+                price = (tick[0] if sig.is_long else tick[1]) if tick else sig.entry
+                self.emit("UPDATE", sig.symbol,
+                          f"{sig.symbol} CLOSE BEFORE THE WEEKEND",
+                          f"Friday close. Flatten this position now.\n\n"
+                          f"  entry   {sig.entry:.{digits}f}\n"
+                          f"  now     {price:.{digits}f}   "
+                          f"({self._pips(sig, price):+.0f} pips)\n\n"
+                          f"The strategy does not hold over the weekend gap --\n"
+                          f"price can jump straight through your stop while the\n"
+                          f"market is shut.",
+                          {"side": "", "kind": "weekend_close"})
+                del self.active[key]
+            return
+
         for key, sig in list(self.active.items()):
             tick = self.feed.tick(sig.symbol)
             if tick is None:
@@ -270,19 +343,41 @@ class SignalScanner:
                     del self.active[key]
 
             elif sig.status == "tp1":
+                # After TP1 the tested system does not sit on a fixed stop and
+                # it does not go to breakeven. It ratchets the stop behind swing
+                # structure, and that trail produces 30% of all its exits. The
+                # runner is meant to be given room and then followed.
+                if not sig.trail_stop:
+                    sig.trail_stop = sig.stop
+
+                level = self._trail_level(sig)
+                if level is not None:
+                    sig.trail_stop = level
+                    self.emit("UPDATE", sig.symbol,
+                              f"{sig.symbol} MOVE STOP to {level:.{digits}f}",
+                              f"Trailing behind structure on the runner.\n\n"
+                              f"  new stop  {level:.{digits}f}   "
+                              f"({self._pips(sig, level):+.0f} pips vs entry)\n"
+                              f"  target    {sig.tp2:.{digits}f}\n\n"
+                              f"Move the stop on your remaining position. This is\n"
+                              f"how the tested system exits most of its trades.",
+                              {"side": "", "kind": "trail"})
+
                 if (best >= sig.tp2) if sig.is_long else (best <= sig.tp2):
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} TP2 HIT @ {sig.tp2:.{digits}f}",
                               f"+{self._pips(sig, sig.tp2):.0f} pips. Trade complete.",
                               {"side": "", "kind": "tp2"})
                     del self.active[key]
-                elif (worst <= sig.entry) if sig.is_long else (worst >= sig.entry):
+                elif (worst <= sig.trail_stop) if sig.is_long \
+                        else (worst >= sig.trail_stop):
                     self.emit("UPDATE", sig.symbol,
-                              f"{sig.symbol} back to BREAKEVEN",
-                              f"Price returned to entry {sig.entry:.{digits}f} "
-                              f"after TP1. If your stop is at entry you are flat, "
-                              f"with TP1 banked.",
-                              {"side": "", "kind": "breakeven"})
+                              f"{sig.symbol} TRAILING STOP HIT @ "
+                              f"{sig.trail_stop:.{digits}f}",
+                              f"Runner closed at {self._pips(sig, sig.trail_stop):+.0f} "
+                              f"pips.\nTP1 was already banked, so the trade is "
+                              f"complete and profitable.",
+                              {"side": "", "kind": "trail_stop"})
                     del self.active[key]
 
     def _pips(self, sig: ActiveSignal, price: float) -> float:
