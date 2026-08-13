@@ -466,6 +466,10 @@ class SignalScanner:
             )
 
             if triggered and tradeable:
+                # Close time of the bar that reached the entry.
+                fill_ts = int(entry.time[k]) + tfmod.seconds(
+                    cfg.execution.entry_timeframe
+                )
                 sig = ActiveSignal(
                     key=key, symbol=symbol, direction=plan.direction,
                     entry=plan.entry, stop=plan.stop, tp1=plan.tp1, tp2=plan.tp2,
@@ -476,10 +480,12 @@ class SignalScanner:
                     # Leaving this "pending" would keep the signal open forever
                     # whenever price never closed back through the level.
                     status="filled",
-                    created_ts=now,
-                    # Anchor the exit search here. Without it, targets could be
-                    # reported hit by price that traded before we were filled.
-                    filled_ts=now,
+                    # Anchor the exit search to the close of the bar that filled
+                    # us, not to wall-clock. During catch-up a scan may be
+                    # processing bars from hours ago, and "now" would wrongly
+                    # discard every bar between the fill and the present.
+                    created_ts=fill_ts,
+                    filled_ts=fill_ts,
                 )
                 self.active[key] = sig
                 self.all_signalled.append(sig)
