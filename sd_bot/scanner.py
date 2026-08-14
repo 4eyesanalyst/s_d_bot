@@ -492,11 +492,22 @@ class SignalScanner:
             return
 
         atr_series = atr_fn(entry.high, entry.low, entry.close)
-        tradeable = in_session(now, ex) and not is_week_close(now, ex)
+        entry_secs = tfmod.seconds(ex.entry_timeframe)
 
         # Walk each unexamined bar: judge it against pre-bar zone state, then
         # age the zones with it. Identical ordering to the backtester's loop.
         for k in range(start, len(entry)):
+            # Session is judged by the *bar's* clock, never the scan's.
+            #
+            # A catch-up pass covers bars that closed hours ago, some of them
+            # outside trading hours. Using wall-clock time here made an
+            # overnight bar look tradeable simply because the scan ran during
+            # the session -- so the bot signalled zones the backtester had
+            # declined and retired. That was the entire source of its invented
+            # entries.
+            bar_close = int(entry.time[k]) + entry_secs
+            tradeable = (in_session(bar_close, ex)
+                         and not is_week_close(bar_close, ex))
             self._evaluate_bar(
                 symbol, cfg, entry, k, pool, bias_pool, bias_live, zone_struct,
                 htf_trend, last, atr_series, spread_price, digits, pip, tradeable,

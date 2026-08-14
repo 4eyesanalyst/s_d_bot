@@ -165,8 +165,18 @@ jobs:
             git rebase -X ours origin/main || { git rebase --abort; exit 1; }
             sleep $((attempt * 3))
           done
-          echo "could not persist state after 5 attempts"
-          exit 1
+          # Warn, but do not fail the run.
+          #
+          # Failing here emails the user about a bookkeeping problem while the
+          # watcher itself worked perfectly -- it scanned, and it would have
+          # alerted. Alarms that fire for non-events train you to ignore them,
+          # and then the one that matters gets ignored too. Delivery failures
+          # still fail loudly, because those are the ones that cost trades.
+          echo "::warning::could not persist signal state after 5 attempts."
+          echo "::warning::The watcher ran correctly; only its memory of what"
+          echo "::warning::it already alerted failed to save. Worst case is a"
+          echo "::warning::repeated heartbeat on the next handover."
+          exit 0
 
       # Hand over to the next watcher.
       #

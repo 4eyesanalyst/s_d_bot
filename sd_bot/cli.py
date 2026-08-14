@@ -208,6 +208,41 @@ def cmd_scan(args) -> int:
 
 
 def cmd_live(args) -> int:
+    # Auto-execution is disabled on purpose.
+    #
+    # `live.py` places real orders through MetaTrader 5, but it has never been
+    # parity-checked against the backtester and it predates every management fix
+    # made since: it has no trailing stop (30% of the strategy's exits), no
+    # weekend flatten, judges take-profits against the wrong price, and still
+    # closes runners on a "back to breakeven" rule the strategy does not
+    # contain. It would trade a measurably different system from the one that
+    # was validated -- while placing real orders.
+    #
+    # Signals go through `python -m sd_bot signals`, which is parity-tested.
+    print("\n" + "!" * 72)
+    print("  AUTO-EXECUTION IS DISABLED")
+    print("!" * 72)
+    print(
+        "\n  sd_bot/live.py places real orders but has never been parity-checked,\n"
+        "  and it predates every trade-management fix made since it was written:\n"
+        "\n"
+        "    - no trailing stop        (30% of the strategy's exits)\n"
+        "    - no weekend flatten      (5% of its exits)\n"
+        "    - take-profits judged against pre-entry prices\n"
+        "    - closes runners on a breakeven rule the strategy does not have\n"
+        "\n"
+        "  Running it would place real money behind a different system from the\n"
+        "  one that was validated. Use the signal service instead:\n"
+        "\n"
+        "      python -m sd_bot signals\n"
+        "\n"
+        "  and place the orders yourself. If you want auto-execution, say so and\n"
+        "  it can be rebuilt on the tested scanner and parity-checked first.\n"
+    )
+    return 1
+
+
+def _cmd_live_disabled(args) -> int:
     from .live import LiveTrader
 
     cfg = _config(args)
