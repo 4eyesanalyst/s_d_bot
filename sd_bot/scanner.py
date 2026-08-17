@@ -425,6 +425,7 @@ class SignalScanner:
             return
 
         zone_secs = tfmod.seconds(ex.zone_timeframe)
+        entry_secs = tfmod.seconds(ex.entry_timeframe)
         bias_secs = tfmod.seconds(ex.bias_timeframe)
 
         # Zones are derived from zone-timeframe bars, so they only change when a
@@ -448,10 +449,12 @@ class SignalScanner:
             zone_struct = Structure(zone_bars, cfg.structure.swing_lookback)
             bias_struct = Structure(bias_bars, cfg.structure.swing_lookback)
             pool = settle_on(
-                find_zones(zone_bars, cfg.zone, zone_struct), prior, zone_secs
+                find_zones(zone_bars, cfg.zone, zone_struct), prior,
+                zone_secs, entry_secs,
             )
             bias_pool = settle_on(
-                find_zones(bias_bars, cfg.zone, bias_struct), prior, bias_secs
+                find_zones(bias_bars, cfg.zone, bias_struct), prior,
+                bias_secs, entry_secs,
             )
             # Zones are fresh objects; restore what we already spent.
             for z in pool:

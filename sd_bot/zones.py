@@ -398,7 +398,8 @@ def update_all(zones: list[Zone], high: float, low: float, close: float) -> None
         z.update(high, low, close)
 
 
-def settle_on(zones: list[Zone], bars: Bars, zone_seconds: int) -> list[Zone]:
+def settle_on(zones: list[Zone], bars: Bars, zone_seconds: int,
+              entry_seconds: int = 0) -> list[Zone]:
     """Replay zone state using a *lower* timeframe than the zones came from.
 
     The backtester ages zones with entry-timeframe bars, so a zone invalidated
@@ -406,11 +407,20 @@ def settle_on(zones: list[Zone], bars: Bars, zone_seconds: int) -> list[Zone]:
     it. Settling on H1 instead would keep that zone alive and the live bot would
     signal a setup the backtest never took. Replaying on the same bars the
     backtester uses removes that whole class of divergence.
+
+    ``entry_seconds`` aligns the *first* aged bar with the backtester, which
+    activates a zone at the bar where ``bar_time + entry_seconds >=
+    created_time + zone_seconds`` -- one entry bar earlier than the naive
+    ``bar_time >= created_time + zone_seconds``. That single skipped bar is
+    enough to miss a touch, leaving a zone the backtester had already retired
+    looking fresh, and the live bot then signals a setup the strategy had spent.
     """
     for z in zones:
         # A zone becomes tradeable when the bar that completed its departure
-        # closes; start ageing it from exactly that moment.
-        start = int(np.searchsorted(bars.time, z.created_time + zone_seconds, "left"))
+        # closes; start ageing from the first entry bar whose *close* is at or
+        # after that moment.
+        start = int(np.searchsorted(
+            bars.time, z.created_time + zone_seconds - entry_seconds, "left"))
         for k in range(start, len(bars)):
             z.update(float(bars.high[k]), float(bars.low[k]), float(bars.close[k]))
             if z.invalidated:
