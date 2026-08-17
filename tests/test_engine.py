@@ -211,6 +211,64 @@ def test_align_never_leaks():
     check("first bars have no HTF context", idx[0] == -1, f"idx[0]={idx[0]}")
 
 
+def test_unagable_zones_are_discarded():
+    """A zone older than the ageing window must never be treated as fresh.
+
+    Regression guard. Ageing only observes the bars handed to settle_on. A zone
+    born before that window has had touches nobody can see -- in the case that
+    exposed this, 272 of them -- so it arrived looking pristine when the
+    backtester had retired it after the first. Freshness is 22 of the 100
+    scoring points, so an unagable zone is not slightly stale, it is wrong, and
+    the live bot signalled setups the strategy had long since spent.
+    """
+    from sd_bot.zones import DEMAND, Zone, settle_on
+
+    n = 200
+    step = 900                                  # M15
+    t0 = EPOCH
+    bars = Bars(
+        symbol="TEST", timeframe="M15",
+        time=np.arange(t0, t0 + n * step, step, dtype=np.int64),
+        open=np.full(n, 1.1000), high=np.full(n, 1.1010),
+        low=np.full(n, 1.0990), close=np.full(n, 1.1000),
+        volume=np.full(n, 1.0), spread=np.full(n, 5.0),
+    )
+
+    def zone_at(created_time):
+        return Zone(
+            symbol="TEST", timeframe="H1", kind=DEMAND, pattern="DBR",
+            base_start=1, base_end=2, created=5, created_time=created_time,
+            proximal=1.1000, distal=1.0980, height=0.0020, atr_at_base=0.0010,
+            departure_ratio=4.0, caused_bos=True, has_imbalance=True, curve=0.2,
+        )
+
+    # Born a day before the window opens: unagable.
+    old = zone_at(t0 - 86_400)
+    settle_on([old], bars, zone_seconds=3600, entry_seconds=step)
+    check("zone born before the window is discarded", old.invalidated,
+          f"invalidated={old.invalidated} tests={old.tests}")
+
+    # Born inside the window: aged normally.
+    fresh = zone_at(int(bars.time[10]))
+    settle_on([fresh], bars, zone_seconds=3600, entry_seconds=step)
+    check("zone born inside the window is kept", not fresh.invalidated)
+    check("zone inside the window actually gets aged", fresh.tests > 0,
+          f"tests={fresh.tests}")
+
+
+def test_entry_window_covers_the_age_limit():
+    """The scanner must hold enough bars to age any zone it may still trade."""
+    from sd_bot.scanner import BARS_ENTRY
+
+    cfg = Config()
+    ratio = 60 // 15                     # H1 zones, M15 entries
+    needed = cfg.zone.max_zone_age_bars * ratio
+    check("entry window covers the maximum tradeable zone age",
+          BARS_ENTRY >= needed,
+          f"BARS_ENTRY={BARS_ENTRY} but a {cfg.zone.max_zone_age_bars}-bar "
+          f"zone needs {needed} M15 bars")
+
+
 def test_bad_data_is_rejected():
     """Corrupt bars must raise, not quietly produce fictional backtests.
 

@@ -415,12 +415,29 @@ def settle_on(zones: list[Zone], bars: Bars, zone_seconds: int,
     enough to miss a touch, leaving a zone the backtester had already retired
     looking fresh, and the live bot then signals a setup the strategy had spent.
     """
+    if not len(bars):
+        return zones
+
+    window_start = int(bars.time[0])
     for z in zones:
         # A zone becomes tradeable when the bar that completed its departure
         # closes; start ageing from the first entry bar whose *close* is at or
         # after that moment.
-        start = int(np.searchsorted(
-            bars.time, z.created_time + zone_seconds - entry_seconds, "left"))
+        born = z.created_time + zone_seconds - entry_seconds
+
+        # Refuse to judge a zone we cannot fully age.
+        #
+        # Ageing only sees the bars handed in. A zone born before this window
+        # has had touches nobody here can observe -- in one measured case, 272
+        # of them -- so it arrives looking pristine when the strategy retired it
+        # long ago. Freshness is the largest single component of the score, so
+        # an unagable zone is not a slightly stale opinion, it is a wrong one.
+        # Treat it as spent: never entered, never counted as an obstacle.
+        if born < window_start:
+            z.invalidated = True
+            continue
+
+        start = int(np.searchsorted(bars.time, born, "left"))
         for k in range(start, len(bars)):
             z.update(float(bars.high[k]), float(bars.low[k]), float(bars.close[k]))
             if z.invalidated:

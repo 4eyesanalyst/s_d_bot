@@ -50,7 +50,14 @@ from .zones import DEMAND, find_zones, settle, settle_on, update_all
 # produce stale alerts.
 MAX_CATCHUP_BARS = 200
 
-BARS_ENTRY = 1500
+# Must be long enough to age any zone the strategy would still trade, or
+# settle_on discards it as unagable and the setup is silently lost.
+#
+# zone.max_zone_age_bars is 500 H1 bars = 2000 M15 bars; the rest is room for
+# the departure leg and for a zone-timeframe window that starts slightly early.
+# At 1500 this was too short, and zones older than ~15 days arrived looking
+# untouched when they had in fact been tested hundreds of times.
+BARS_ENTRY = 2400
 BARS_ZONE = 4000
 BARS_BIAS = 1500
 
@@ -500,17 +507,19 @@ class SignalScanner:
         # Walk each unexamined bar: judge it against pre-bar zone state, then
         # age the zones with it. Identical ordering to the backtester's loop.
         for k in range(start, len(entry)):
-            # Session is judged by the *bar's* clock, never the scan's.
+            # Session is judged by the bar's OPEN time, never the scan's and
+            # never the bar's close.
             #
-            # A catch-up pass covers bars that closed hours ago, some of them
-            # outside trading hours. Using wall-clock time here made an
+            # Two separate mistakes lived here. Using wall-clock time made an
             # overnight bar look tradeable simply because the scan ran during
-            # the session -- so the bot signalled zones the backtester had
-            # declined and retired. That was the entire source of its invented
-            # entries.
-            bar_close = int(entry.time[k]) + entry_secs
-            tradeable = (in_session(bar_close, ex)
-                         and not is_week_close(bar_close, ex))
+            # the session. Using the bar's *close* then shifted the session
+            # boundary by one bar: the 06:45 bar closes at 07:00, so the scanner
+            # took it while the backtester -- which keys off the open -- did not.
+            # A single bar at the London open was enough to manufacture a signal
+            # the strategy never had.
+            bar_open = int(entry.time[k])
+            tradeable = (in_session(bar_open, ex)
+                         and not is_week_close(bar_open, ex))
             self._evaluate_bar(
                 symbol, cfg, entry, k, pool, bias_pool, bias_live, zone_struct,
                 htf_trend, last, atr_series, spread_price, digits, pip, tradeable,
