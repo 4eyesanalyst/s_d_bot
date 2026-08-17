@@ -85,10 +85,18 @@ def main() -> int:
     while not _stop and time.time() < deadline:
         now = int(datetime.now(timezone.utc).timestamp())
 
-        # The heartbeat is a liveness signal, so it goes out regardless of
-        # whether the market is open to us.
+        # Heartbeat on the first pass of each *trading* session, not the first
+        # pass of each UTC day.
+        #
+        # Firing on the calendar day meant it landed at 00:01 -- the watcher
+        # idles awake overnight, so it stamped the new date just after midnight
+        # -- and it fired on Saturdays and Sundays when there is no market to
+        # watch. A liveness signal that arrives in the middle of the night, and
+        # on days when silence is expected anyway, is noise. Noise is what makes
+        # someone stop reading the message that matters.
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if scanner.last_heartbeat_day != today:
+        session_now = in_session(now, cfg.execution)
+        if session_now and scanner.last_heartbeat_day != today:
             try:
                 from github_poll import send_heartbeat
 
