@@ -344,8 +344,16 @@ class SignalScanner:
                 elif (worst <= sig.stop) if sig.is_long else (worst >= sig.stop):
                     self.emit("UPDATE", sig.symbol,
                               f"{sig.symbol} STOPPED OUT @ {sig.stop:.{digits}f}",
-                              f"{self._pips(sig, sig.stop):.0f} pips. "
-                              f"Full 1R loss, as planned.",
+                              # Never imply the loss was intended. "As planned"
+                              # was meant to say the loss came in at exactly the
+                              # size risked, but read as though losing were the
+                              # objective -- at the one moment the reader has
+                              # just lost money and is least inclined to give a
+                              # message the benefit of the doubt.
+                              f"{self._pips(sig, sig.stop):.0f} pips (-1.0R).\n\n"
+                              f"The stop held at the level it was set, so the\n"
+                              f"loss is the amount that was risked and no more.\n"
+                              f"This trade is over; nothing to do.",
                               {"side": "", "kind": "stop"})
                     del self.active[key]
 
