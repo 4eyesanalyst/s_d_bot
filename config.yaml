@@ -12,6 +12,7 @@ execution:
     - XAUUSD
     - EURUSD
     - USDJPY
+    - EURJPY
 
   # The three-screen workflow: bias sets direction, zones are the map,
   # entry is the trigger.
@@ -137,3 +138,4 @@ symbols:
   AUDUSD: {signal: {min_stop_pips: 6}}
   USDCAD: {signal: {min_stop_pips: 7}}
   NZDUSD: {signal: {min_stop_pips: 6}}
+  EURJPY: {signal: {min_stop_pips: 11}}
