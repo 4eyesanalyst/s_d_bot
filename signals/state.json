@@ -11,9 +11,9 @@
       "score": 64.28929257126006,
       "zone_note": "RBD C H1 dep=3.7x",
       "created": "2026-08-31T20:16:19.722442+00:00",
-      "status": "filled",
+      "status": "tp1",
       "alerted_approach": false,
-      "trail_stop": 0.0,
+      "trail_stop": 4465.440525740382,
       "created_ts": 1788207300,
       "filled_ts": 1788207300
     }
@@ -38,5 +38,5 @@
     "XAUUSD:H1:1786989600:-1",
     "XAUUSD:H1:1788181200:-1"
   ],
-  "heartbeat_day": "2026-08-31"
+  "heartbeat_day": "2026-09-01"
 }
