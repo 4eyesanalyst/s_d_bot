@@ -1,23 +1,5 @@
 {
-  "active": {
-    "XAUUSD:H1:1788181200:-1": {
-      "key": "XAUUSD:H1:1788181200:-1",
-      "symbol": "XAUUSD",
-      "direction": -1,
-      "entry": 4453.655,
-      "stop": 4465.440525740382,
-      "tp1": 4438.9230928245215,
-      "tp2": 4368.810525740383,
-      "score": 64.28929257126006,
-      "zone_note": "RBD C H1 dep=3.7x",
-      "created": "2026-08-31T20:16:19.722442+00:00",
-      "status": "tp1",
-      "alerted_approach": false,
-      "trail_stop": 4465.440525740382,
-      "created_ts": 1788207300,
-      "filled_ts": 1788207300
-    }
-  },
+  "active": {},
   "cooldown": {
     "XAUUSD:H1:1786446000:1": 1786477829.2832901,
     "XAUUSD:H1:1786536000:1": 1786568443.4144528,
