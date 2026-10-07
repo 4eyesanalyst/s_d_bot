@@ -1,23 +1,5 @@
 {
-  "active": {
-    "EURUSD:H1:1791158400:-1": {
-      "key": "EURUSD:H1:1791158400:-1",
-      "symbol": "EURUSD",
-      "direction": -1,
-      "entry": 1.12759,
-      "stop": 1.1287056497025736,
-      "tp1": 1.1261954378717833,
-      "tp2": 1.1218656497025736,
-      "score": 66.65957446808687,
-      "zone_note": "RBD B H1 dep=3.7x",
-      "created": "2026-10-06T12:15:19.458990+00:00",
-      "status": "tp1",
-      "alerted_approach": false,
-      "trail_stop": 1.1287056497025736,
-      "created_ts": 1791288900,
-      "filled_ts": 1791288900
-    }
-  },
+  "active": {},
   "cooldown": {
     "XAUUSD:H1:1786446000:1": 1786477829.2832901,
     "XAUUSD:H1:1786536000:1": 1786568443.4144528,
@@ -102,5 +84,5 @@
     "XAUUSD:H1:1789527600:1",
     "XAUUSD:H1:1790704800:1"
   ],
-  "heartbeat_day": "2026-10-06"
+  "heartbeat_day": "2026-10-07"
 }
